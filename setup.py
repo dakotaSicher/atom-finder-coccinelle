@@ -20,7 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "aoc-cocci = src.tools.aoc_cocci:atom_finder",
-            "aoc-linux-fixes = src.analysis.scripts.extract_fixes:extract_linux_fixes"
+            "aoc-linux-fixes = src.tools.aoc_linux_fixes:extract_linux_fixes"
         ],
     },
 )

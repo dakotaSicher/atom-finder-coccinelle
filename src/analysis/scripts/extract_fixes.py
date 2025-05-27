@@ -1,5 +1,5 @@
 from collections import defaultdict
-import click
+import cProfile
 import csv
 import json
 import multiprocessing
@@ -23,7 +23,7 @@ COMMITS_FILE_PATH = Path("commits.json")  # Path to a JSON file containing commi
 RESULTS_DIR = Path("./results")
 LAST_PROCESSED_DIR = Path("./last_processed")
 ERRORS_FILE_DIR = Path("./extract")
-NUMBER_OF_PROCESSES = 5
+NUMBER_OF_PROCESSES = 1
 
 
 def find_removed_atoms(repo, commit):
@@ -92,7 +92,7 @@ def iterate_commits_and_extract_removed_code(repo_path, stop_commit, commits_fil
     stop_iteration = False
     for commit in repo.walk(head, pygit2.GIT_SORT_TIME):
         commit_message = commit.message.strip()
-        print(commit.id)
+        #print(commit.id)
 
         # Filter by cutoff timestamp if set
         if cutoff_timestamp is not None and commit.commit_time < cutoff_timestamp:
@@ -190,13 +190,7 @@ def combine_results(results_folder):
                             writer.writerow(row)
 
 
-#if __name__ == "__main__":
-@click.command()
-@click.argument("linux_dir",type=Path)
-@click.option("-o", "--output-dir", type=Path, default="./output")
-@click.option("-t","--history_length",type=str, default=None)
-
-def extract_linux_fixes(linux_dir,output_dir:Path,history_length):
+def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None):
     stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
     output_dir.mkdir(exist_ok=True)
     commits_file_path = output_dir / "commits.json"
@@ -216,12 +210,12 @@ def extract_linux_fixes(linux_dir,output_dir:Path,history_length):
     commits = json.loads(commits_file_path.read_text())
     # commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
 
-"""    if len(commits) == 1 or NUMBER_OF_PROCESSES == 1:
+    if len(commits) == 1 or NUMBER_OF_PROCESSES == 1:
         get_removed_lines(linux_dir, commits, results_dir / "atoms.csv", last_processed / "last_processed.json", errors_dir / "errors.json")
     else:
         execute(linux_dir, commits, NUMBER_OF_PROCESSES, results_dir, last_processed, errors_dir)
 
-    combine_results(results_dir)"""
+    combine_results(results_dir)
 
 if __name__ == "__main__":
-    extract_linux_fixes()
+    cProfile.run('extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one month")',"profile_linux_fixes" )

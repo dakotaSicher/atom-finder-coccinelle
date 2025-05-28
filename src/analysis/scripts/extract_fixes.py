@@ -154,6 +154,8 @@ def execute(repo_path, commits, number_of_processes, results_dir, last_procesed_
     """
     Main function to spawn the processes.
     """
+    if number_of_processes == 0:
+        number_of_processes = multiprocessing.cpu_count()
     # Create a pool of worker processes
     chunks = chunkify(commits, number_of_processes)
     with multiprocessing.Pool(processes=number_of_processes) as pool:
@@ -190,7 +192,9 @@ def combine_results(results_folder):
                             writer.writerow(row)
 
 
-def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None):
+#Similar to the aoc_linux_fixes tool, this version is used to run the profiler
+def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None,num_cpu = NUMBER_OF_PROCESSES):
+
     stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
     output_dir.mkdir(exist_ok=True)
     commits_file_path = output_dir / "commits.json"
@@ -210,10 +214,10 @@ def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     commits = json.loads(commits_file_path.read_text())
     # commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
 
-    if len(commits) == 1 or NUMBER_OF_PROCESSES == 1:
+    if len(commits) == 1 or num_cpu == 1:
         get_removed_lines(linux_dir, commits, results_dir / "atoms.csv", last_processed / "last_processed.json", errors_dir / "errors.json")
     else:
-        execute(linux_dir, commits, NUMBER_OF_PROCESSES, results_dir, last_processed, errors_dir)
+        execute(linux_dir, commits, num_cpu, results_dir, last_processed, errors_dir)
 
     combine_results(results_dir)
 

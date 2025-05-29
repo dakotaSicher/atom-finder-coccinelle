@@ -196,7 +196,7 @@ def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, e
             continue
         try:
             commit = repo.get(commit_sha)
-            atoms = find_removed_atoms(repo, commit, pool)
+            atoms = find_removed_atoms(repo, commit)
             count += 1
             if atoms:
                 append_rows_to_csv(output, atoms)

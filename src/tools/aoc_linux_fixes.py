@@ -3,7 +3,7 @@ import json
 #import cProfile
 
 from pathlib import Path
-from src.analysis.scripts.extract_fixes import iterate_commits_and_extract_removed_code, get_removed_lines,execute, combine_results
+from src.analysis.scripts.extract_fixes import iterate_commits_and_extract_removed_code, get_removed_lines,execute, combine_results,execute_queue
 from src.analysis.utils.utils import safely_load_json
 from src import ROOT_DIR
 
@@ -45,7 +45,8 @@ def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     if len(commits) == 1 or cpus == 1:
         get_removed_lines(linux_dir, commits, results_dir / "atoms.csv", last_processed / "last_processed.json", errors_dir / "errors.json")
     else:
-        execute(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
+        #execute(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
+        execute_queue(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
 
     combine_results(results_dir)
 

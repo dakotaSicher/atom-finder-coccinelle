@@ -3,7 +3,7 @@ import json
 #import cProfile
 
 from pathlib import Path
-from src.analysis.scripts.extract_fixes import iterate_commits_and_extract_removed_code, get_removed_lines,execute, combine_results
+from src.analysis.scripts.extract_fixes import iterate_commits_and_extract_removed_code, get_removed_lines,execute, combine_results,execute_queue
 from src.analysis.utils.utils import safely_load_json
 from src import ROOT_DIR
 
@@ -20,8 +20,10 @@ NUMBER_OF_PROCESSES = 4
 @click.argument("linux_dir",type=Path)
 @click.option("-o", "--output-dir", type=Path, default="./output")
 @click.option("-t","--history_length",type=str, default=None,help="Length of commit history to analyze")
+@click.option("-p","--cpus",type=int,default=1,help="number of cpus to use for multiprocessing. Enter 0 to select all")
 
-def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None):
+def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = 1):
+
     stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
     output_dir.mkdir(exist_ok=True)
     commits_file_path = output_dir / "commits.json"
@@ -40,12 +42,13 @@ def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     commits = json.loads(commits_file_path.read_text())
     # commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
 
-    if len(commits) == 1 or NUMBER_OF_PROCESSES == 1:
+    if len(commits) == 1 or cpus == 1:
         get_removed_lines(linux_dir, commits, results_dir / "atoms.csv", last_processed / "last_processed.json", errors_dir / "errors.json")
     else:
-        execute(linux_dir, commits, NUMBER_OF_PROCESSES, results_dir, last_processed, errors_dir)
+        #execute(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
+        execute_queue(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
 
     combine_results(results_dir)
 
 if __name__ == "__main__":
-    extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one week")
+    extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one week", NUMBER_OF_PROCESSES)

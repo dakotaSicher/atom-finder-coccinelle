@@ -154,6 +154,8 @@ def execute(repo_path, commits, number_of_processes, results_dir, last_procesed_
     """
     Main function to spawn the processes.
     """
+    if number_of_processes == 0:
+        number_of_processes = multiprocessing.cpu_count() - 2
     # Create a pool of worker processes
     chunks = chunkify(commits, number_of_processes)
     with multiprocessing.Pool(processes=number_of_processes) as pool:
@@ -173,6 +175,71 @@ def chunkify(lst, n):
     return [lst[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
+def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, errors_path, pool=None):
+    """Worker function that pulls commits from the shared queue."""
+    repo = pygit2.Repository(str(repo_path))
+    processed = load_processed_data(processed_path)
+    count, count_w_atoms = processed["count"], processed["count_w_atoms"]
+    first_commit = processed["last_commit"]
+    found_first_commit = first_commit is None
+
+    while True:
+        try:
+            commit_sha = commit_queue.get_nowait()
+        except Exception:
+            break  # Queue is empty
+
+        if first_commit and not found_first_commit:
+            found_first_commit = commit_sha == first_commit
+            continue
+        if not found_first_commit:
+            continue
+        try:
+            commit = repo.get(commit_sha)
+            atoms = find_removed_atoms(repo, commit)
+            count += 1
+            if atoms:
+                append_rows_to_csv(output, atoms)
+                count_w_atoms += 1
+            logger.info(f"Processed {count} commits, {count_w_atoms} with atoms.")
+        except Exception as e:
+            logger.error(e)
+            append_to_json(errors_path, {"commit_sha": commit_sha, "error": str(e)})
+            continue
+        processed.update({"count": count, "count_w_atoms": count_w_atoms, "last_commit": str(commit.id)})
+        processed_path.write_text(json.dumps(processed))
+
+
+def execute_queue(repo_path, commits, number_of_processes, results_dir, last_procesed_dir, errors_dir):
+    """
+    Main function to spawn the processes using a shared queue.
+    """
+    if number_of_processes == 0:
+        number_of_processes = multiprocessing.cpu_count() - 2
+
+    manager = multiprocessing.Manager()
+    commit_queue = manager.Queue()
+    for commit in commits:
+        commit_queue.put(commit)
+
+    processes = []
+    for i in range(number_of_processes):
+        p = multiprocessing.Process(
+            target=_get_removed_lines_worker,
+            args=(
+                repo_path,
+                commit_queue,
+                results_dir / f"atoms{i+1}.csv",
+                last_procesed_dir / f"last_processed{i+1}.json",
+                errors_dir / f"errors{i+1}.json",
+            ),
+        )
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
+
 def combine_results(results_folder):
 
     combined_file_path = results_folder / "atoms.csv"
@@ -190,7 +257,9 @@ def combine_results(results_folder):
                             writer.writerow(row)
 
 
-def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None):
+#Similar to the aoc_linux_fixes tool, this version is used to run the profiler
+def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None,num_cpu = NUMBER_OF_PROCESSES):
+
     stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
     output_dir.mkdir(exist_ok=True)
     commits_file_path = output_dir / "commits.json"
@@ -210,12 +279,13 @@ def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     commits = json.loads(commits_file_path.read_text())
     # commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
 
-    if len(commits) == 1 or NUMBER_OF_PROCESSES == 1:
+    if len(commits) == 1 or num_cpu == 1:
         get_removed_lines(linux_dir, commits, results_dir / "atoms.csv", last_processed / "last_processed.json", errors_dir / "errors.json")
     else:
-        execute(linux_dir, commits, NUMBER_OF_PROCESSES, results_dir, last_processed, errors_dir)
-
+        #execute(linux_dir, commits, num_cpu, results_dir, last_processed, errors_dir)
+        execute_queue(linux_dir, commits, num_cpu, results_dir, last_processed, errors_dir)
+    
     combine_results(results_dir)
 
 if __name__ == "__main__":
-    cProfile.run('extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one month")',"profile_linux_fixes" )
+    cProfile.run('extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one month",0)',"profile_linux_fixes" )

@@ -160,7 +160,7 @@ def execute(repo_path, commits, number_of_processes, results_dir, last_procesed_
     Main function to spawn the processes.
     """
     if number_of_processes == 0:
-        number_of_processes = multiprocessing.cpu_count() - 2
+        number_of_processes = multiprocessing.cpu_count()
     # Create a pool of worker processes
     chunks = chunkify(commits, number_of_processes)
     with multiprocessing.Pool(processes=number_of_processes) as pool:
@@ -228,7 +228,7 @@ def execute_queue(repo_path, commits, number_of_processes, results_dir, last_pro
         *_dir (path): output directories 
     '''
     if number_of_processes == 0:
-        number_of_processes = multiprocessing.cpu_count() - 2
+        number_of_processes = multiprocessing.cpu_count()
 
     manager = multiprocessing.Manager()
     commit_queue = manager.Queue()

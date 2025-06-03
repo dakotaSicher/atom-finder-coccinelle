@@ -15,6 +15,17 @@ ERRORS_FILE_DIR = Path("./extract")
 
 NUMBER_OF_PROCESSES = 4
 
+'''
+aoc-linux-fixes is a tool for examining bug fix commits to the linux kernel
+It runs coccinelle patches on the changes made by the bug fix to see if the removed/modified code 
+contained any atoms, or was infulence by the presence of atoms.
+
+This tool takes up to 4 arguments:
+- The directory containing a clone of the linux kernel
+- A directory path for output
+- A length of time from now for which to process commits
+- The number of worker processes to spawn
+'''
 
 @click.command()
 @click.argument("linux_dir",type=Path)
@@ -22,7 +33,7 @@ NUMBER_OF_PROCESSES = 4
 @click.option("-t","--history_length",type=str, default=None,help="Length of commit history to analyze")
 @click.option("-p","--cpus",type=int,default=1,help="number of cpus to use for multiprocessing. Enter 0 to select all")
 
-def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = 1):
+def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = NUMBER_OF_PROCESSES):
 
     stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
     output_dir.mkdir(exist_ok=True)
@@ -52,3 +63,4 @@ def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
 
 if __name__ == "__main__":
     extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one week", NUMBER_OF_PROCESSES)
+    #cProfile.run('extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one month",0)',"profile_linux_fixes" )

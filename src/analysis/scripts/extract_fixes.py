@@ -120,6 +120,9 @@ def load_processed_data(processed_path):
     return {"count": 0, "count_w_atoms": 0, "last_commit": None}
 
 
+'''
+Single thread version 
+'''
 def get_removed_lines(repo_path, commits, output, processed_path, errors_path):
     """Process commits and extract lines removed in each commit."""
     repo = pygit2.Repository(str(repo_path))
@@ -149,7 +152,9 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path):
         processed.update({"count": count, "count_w_atoms": count_w_atoms, "last_commit": str(commit.id)})
         processed_path.write_text(json.dumps(processed))
 
-
+'''
+Mutliprocessing using static commit lists
+'''
 def execute(repo_path, commits, number_of_processes, results_dir, last_procesed_dir, errors_dir):
     """
     Main function to spawn the processes.
@@ -175,8 +180,10 @@ def chunkify(lst, n):
     return [lst[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
-def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, errors_path, pool=None):
-    """Worker function that pulls commits from the shared queue."""
+def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, errors_path):
+    """
+    Worker function that pulls commits from the shared queue.
+    """
     repo = pygit2.Repository(str(repo_path))
     processed = load_processed_data(processed_path)
     count, count_w_atoms = processed["count"], processed["count_w_atoms"]
@@ -211,9 +218,15 @@ def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, e
 
 
 def execute_queue(repo_path, commits, number_of_processes, results_dir, last_procesed_dir, errors_dir):
-    """
-    Main function to spawn the processes using a shared queue.
-    """
+    '''
+    Multiprocessing using shared queue of commits 
+
+    Args:
+        repo_path (str): Path to the repository.
+        commits (list[str]): list of commits to be processed
+        number_of_processes (int): number of worker processes to use
+        *_dir (path): output directories 
+    '''
     if number_of_processes == 0:
         number_of_processes = multiprocessing.cpu_count() - 2
 
@@ -240,6 +253,9 @@ def execute_queue(repo_path, commits, number_of_processes, results_dir, last_pro
     for p in processes:
         p.join()
 
+'''
+Combines multiprocessing results into single data set
+'''
 def combine_results(results_folder):
 
     combined_file_path = results_folder / "atoms.csv"
@@ -256,36 +272,3 @@ def combine_results(results_folder):
                         for row in reader:
                             writer.writerow(row)
 
-
-#Similar to the aoc_linux_fixes tool, this version is used to run the profiler
-def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None,num_cpu = NUMBER_OF_PROCESSES):
-
-    stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
-    output_dir.mkdir(exist_ok=True)
-    commits_file_path = output_dir / "commits.json"
-
-
-    commits = safely_load_json(commits_file_path)
-    if not commits or commits[-1] != stop_commit:
-        iterate_commits_and_extract_removed_code(linux_dir, stop_commit, commits_file_path, history_length)
-
-    last_processed = output_dir / LAST_PROCESSED_DIR
-    last_processed.mkdir(exist_ok=True)
-    results_dir = output_dir/RESULTS_DIR
-    results_dir.mkdir(exist_ok=True)
-    errors_dir = results_dir / ERRORS_FILE_DIR
-    errors_dir.mkdir(exist_ok=True)
-
-    commits = json.loads(commits_file_path.read_text())
-    # commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
-
-    if len(commits) == 1 or num_cpu == 1:
-        get_removed_lines(linux_dir, commits, results_dir / "atoms.csv", last_processed / "last_processed.json", errors_dir / "errors.json")
-    else:
-        #execute(linux_dir, commits, num_cpu, results_dir, last_processed, errors_dir)
-        execute_queue(linux_dir, commits, num_cpu, results_dir, last_processed, errors_dir)
-    
-    combine_results(results_dir)
-
-if __name__ == "__main__":
-    cProfile.run('extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one month",0)',"profile_linux_fixes" )

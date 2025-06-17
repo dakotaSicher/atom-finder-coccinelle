@@ -31,7 +31,7 @@ This tool takes up to 4 arguments:
 @click.argument("linux_dir",type=Path)
 @click.option("-o", "--output-dir", type=Path, default="./output")
 @click.option("-t","--history_length",type=str, default=None,help="Length of commit history to analyze")
-@click.option("-p","--cpus",type=int,default=1,help="number of cpus to use for multiprocessing. Enter 0 to select all")
+@click.option("-p","--cpus",type=int,default=None,help="number of cpus to use for multiprocessing. Defaults to cpu_count")
 
 def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = NUMBER_OF_PROCESSES):
 

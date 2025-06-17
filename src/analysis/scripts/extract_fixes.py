@@ -1,5 +1,4 @@
 from collections import defaultdict
-import cProfile
 import csv
 import json
 import multiprocessing
@@ -16,15 +15,7 @@ from src.analysis.utils.utils import append_rows_to_csv, append_to_json, safely_
 from src.run_cocci import CocciPatch
 from src.log import logger
 
-
 PATCHES_TO_SKIP = [CocciPatch.OMITTED_CURLY_BRACES]
-REPO_PATH = (ROOT_DIR.parent / "projects/linux").absolute()  # Path to the Linux kernel Git repository
-COMMITS_FILE_PATH = Path("commits.json")  # Path to a JSON file containing commit hashes
-RESULTS_DIR = Path("./results")
-LAST_PROCESSED_DIR = Path("./last_processed")
-ERRORS_FILE_DIR = Path("./extract")
-NUMBER_OF_PROCESSES = 1
-
 
 def find_removed_atoms(repo, commit):
     """
@@ -159,7 +150,7 @@ def execute(repo_path, commits, number_of_processes, results_dir, last_procesed_
     """
     Main function to spawn the processes.
     """
-    if number_of_processes == 0:
+    if not number_of_processes:
         number_of_processes = multiprocessing.cpu_count()
     # Create a pool of worker processes
     chunks = chunkify(commits, number_of_processes)
@@ -227,7 +218,7 @@ def execute_queue(repo_path, commits, number_of_processes, results_dir, last_pro
         number_of_processes (int): number of worker processes to use
         *_dir (path): output directories 
     '''
-    if number_of_processes == 0:
+    if not number_of_processes:
         number_of_processes = multiprocessing.cpu_count()
 
     manager = multiprocessing.Manager()

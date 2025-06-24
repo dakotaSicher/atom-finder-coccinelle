@@ -168,3 +168,4 @@ output.csv
 **/errors.json
 **/cscope
 profile_*
+long_commits.json

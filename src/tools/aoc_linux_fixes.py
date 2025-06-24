@@ -63,4 +63,4 @@ def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
 
 if __name__ == "__main__":
     extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one week", NUMBER_OF_PROCESSES)
-    #cProfile.run('extract_linux_fixes(Path("../projects/linux/"), Path("./output"), "one month",0)',"profile_linux_fixes" )
+

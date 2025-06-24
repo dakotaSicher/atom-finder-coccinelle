@@ -16,6 +16,19 @@ from src.run_cocci import CocciPatch
 from src.log import logger
 
 PATCHES_TO_SKIP = [CocciPatch.OMITTED_CURLY_BRACES]
+REPO_PATH = (ROOT_DIR.parent / "projects/linux").absolute()  # Path to the Linux kernel Git repository
+COMMITS_FILE_PATH = Path("commits.json")  # Path to a JSON file containing commit hashes
+RESULTS_DIR = Path("./results")
+LAST_PROCESSED_DIR = Path("./last_processed")
+ERRORS_FILE_DIR = Path("./extract")
+NUMBER_OF_PROCESSES = 1
+
+LONG_RUNTIME_FILE = Path("long_patches_runtime.csv")  # Or place in your results_dir
+
+def log_long_runtime(commit_sha, patches_runtime, log_file=LONG_RUNTIME_FILE):
+    with open(log_file, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([str(commit_sha.id), patches_runtime])
 
 def find_removed_atoms(repo, commit):
     """
@@ -23,7 +36,7 @@ def find_removed_atoms(repo, commit):
     """
     logger.info(f"Current commit: {commit.id}")
     atoms = []
-
+    runtime = 0
     _, removed_lines = get_diff(repo, commit)
 
     if removed_lines:
@@ -35,7 +48,7 @@ def find_removed_atoms(repo, commit):
     with tempfile.TemporaryDirectory() as temp_dir:
         for file_name, removed in removed_lines.items():
             removed_line_numbers = [line.old_lineno for line in removed]
-            atoms = run_coccinelle_for_file_at_commit(
+            atoms, rt = run_coccinelle_for_file_at_commit(
                 repo,
                 file_name,
                 parent,
@@ -45,13 +58,13 @@ def find_removed_atoms(repo, commit):
                 invalid_headers,
                 PATCHES_TO_SKIP,
             )
-
+            runtime += rt
             for row in atoms:
                 atom, path, start_line, start_col, end_line, end_col, code = row
                 output_row = [atom, file_name, str(commit.id), start_line, start_col, code]
                 output.append(output_row)
 
-    return output
+    return output, runtime
 
 
 def iterate_commits_and_extract_removed_code(repo_path, stop_commit, commits_file_path ,history_length = None):
@@ -114,7 +127,7 @@ def load_processed_data(processed_path):
 '''
 Single thread version 
 '''
-def get_removed_lines(repo_path, commits, output, processed_path, errors_path):
+def get_removed_lines(repo_path, commits, output, processed_path, errors_path, long_runtime_path):
     """Process commits and extract lines removed in each commit."""
     repo = pygit2.Repository(str(repo_path))
     processed = load_processed_data(processed_path)
@@ -130,7 +143,9 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path):
             continue
         try:
             commit = repo.get(commit_sha)
-            atoms = find_removed_atoms(repo, commit)
+            atoms, patches_runtime = find_removed_atoms(repo, commit)
+            if patches_runtime > 0:
+                log_long_runtime(commit, patches_runtime,long_runtime_path)
             count += 1
             if atoms:
                 append_rows_to_csv(output, atoms)
@@ -171,7 +186,7 @@ def chunkify(lst, n):
     return [lst[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
-def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, errors_path):
+def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, errors_path,long_runtime_path):
     """
     Worker function that pulls commits from the shared queue.
     """
@@ -194,7 +209,9 @@ def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, e
             continue
         try:
             commit = repo.get(commit_sha)
-            atoms = find_removed_atoms(repo, commit)
+            atoms, patches_runtime = find_removed_atoms(repo, commit)
+            if patches_runtime > 0:
+                log_long_runtime(commit, patches_runtime,long_runtime_path)
             count += 1
             if atoms:
                 append_rows_to_csv(output, atoms)
@@ -236,6 +253,7 @@ def execute_queue(repo_path, commits, number_of_processes, results_dir, last_pro
                 results_dir / f"atoms{i+1}.csv",
                 last_procesed_dir / f"last_processed{i+1}.json",
                 errors_dir / f"errors{i+1}.json",
+                results_dir / f"long_commits{i+1}.csv"
             ),
         )
         p.start()
@@ -248,18 +266,59 @@ def execute_queue(repo_path, commits, number_of_processes, results_dir, last_pro
 Combines multiprocessing results into single data set
 '''
 def combine_results(results_folder):
+    """
+    Combine all atoms*.csv files into atoms.csv and all long_commits*.csv files into long_commits.csv.
+    """
+    atoms_combined = results_folder / "atoms.csv"
+    long_combined = results_folder / "long_commits.csv"
 
-    combined_file_path = results_folder / "atoms.csv"
-
-    with combined_file_path.open("w", newline="") as combined_file:
-        writer = csv.writer(combined_file)
-
-        for file_path in results_folder.iterdir():
-            if file_path.name != combined_file_path.name:
-                if file_path.is_file() and file_path.suffix == ".csv":
-                    print(f"Adding {file_path.name}")
+    # Helper to combine files matching a pattern
+    def combine_pattern(pattern, output_file):
+        with output_file.open("w", newline="") as combined_file:
+            writer = csv.writer(combined_file)
+            for file_path in results_folder.glob(pattern):
+                if file_path.name == output_file.name:
+                    continue
+                if file_path.is_file():
+                    print(f"Adding {file_path.name} to {output_file.name}")
                     with file_path.open("r", newline="") as file:
                         reader = csv.reader(file)
                         for row in reader:
                             writer.writerow(row)
 
+    combine_pattern("atoms*.csv", atoms_combined)
+    combine_pattern("long_commits*.csv", long_combined)
+
+#profiling batch processing of commits
+def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = 1):
+
+    stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
+    output_dir.mkdir(exist_ok=True)
+    commits_file_path = output_dir / "commits.json"
+    long_commits_path = ROOT_DIR / "long_commits.json"
+
+    """ commits = safely_load_json(commits_file_path)
+    if not commits or commits[-1] != stop_commit:
+        iterate_commits_and_extract_removed_code(linux_dir, stop_commit, commits_file_path, history_length) """
+
+    last_processed = output_dir / LAST_PROCESSED_DIR
+    last_processed.mkdir(exist_ok=True)
+    results_dir = output_dir/RESULTS_DIR
+    results_dir.mkdir(exist_ok=True)
+    errors_dir = results_dir / ERRORS_FILE_DIR
+    errors_dir.mkdir(exist_ok=True)
+
+    #commits = json.loads(commits_file_path.read_text())
+    commits = json.loads(long_commits_path.read_text())
+    # commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
+    #commits = ["59ba025948be2a92e8bc9ae1cbdaf197660bd508"]
+
+    if len(commits) == 1 or cpus == 1:
+        get_removed_lines(linux_dir, commits, results_dir / "atoms.csv", last_processed / "last_processed.json", errors_dir / "errors.json",results_dir / f"long_commits.csv")
+    else:
+        #execute(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
+        execute_queue(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
+        combine_results(results_dir)
+
+if __name__ == "__main__":
+    cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_new"), "one month",1)',"profile_linux_fixes_new" )

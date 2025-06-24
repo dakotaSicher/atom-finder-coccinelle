@@ -2,11 +2,9 @@ import csv
 from pathlib import Path
 import re
 import pygit2
-from clang.cindex import Index, CursorKind, Config
+from clang.cindex import Index, CursorKind, TokenKind, Config
 from src.analysis.utils.git import get_file_content_at_commit
 from src.run_cocci import run_patches_and_generate_output
-from src.analysis.utils.parsing_agressive import parse_and_reduce_code
-from src.analysis.utils.parsing_with_cscope import parse_and_modify_with_cscope
 
 
 Config.set_library_file("/usr/lib/llvm-14/lib/libclang-14.so.1")
@@ -21,6 +19,38 @@ def is_complex_structure(cursor):
         CursorKind.STRUCT_DECL,
     ]
 
+def node_is_declaration(cursor):
+    return cursor.kind in [
+        CursorKind.STRUCT_DECL,
+        CursorKind.UNION_DECL,
+        CursorKind.ENUM_DECL,
+        CursorKind.TYPEDEF_DECL,
+        CursorKind.MACRO_DEFINITION,
+        CursorKind.VAR_DECL,
+        CursorKind.PARM_DECL,
+        CursorKind.FIELD_DECL,
+    ]
+
+def node_is_control_stmt(cursor):
+    return cursor.kind in [
+        CursorKind.BREAK_STMT,
+        CursorKind.RETURN_STMT,
+        CursorKind.CONTINUE_STMT,
+        CursorKind.IF_STMT,
+        CursorKind.FOR_STMT,
+        CursorKind.WHILE_STMT,
+        CursorKind.DO_STMT,
+        CursorKind.SWITCH_STMT,
+        CursorKind.CASE_STMT,
+        CursorKind.DEFAULT_STMT,
+    ]
+
+def node_goto_label(cursor):
+    return cursor.kind in [
+        CursorKind.GOTO_STMT,
+        CursorKind.INDIRECT_GOTO_STMT,
+        CursorKind.LABEL_STMT,
+    ]
 
 def save_headers_to_temp(
     full_code, output_dir, repo, commit, loaded_headers, invalid_headers
@@ -85,70 +115,6 @@ def _extract_headers(output_dir, code, repo, commit, processed, invalid):
             )
             all_headers.update(included_headers)
     return all_headers
-
-
-def parse_file(code, include_dir, file_name):
-    index = Index.create()
-    tu = index.parse(
-        file_name,
-        args=["-std=c11", "-nostdinc", f"-I{include_dir}"],
-        unsaved_files=[(file_name, code)],
-    )
-    return tu
-
-
-def parse_and_modify_functions(code, removed_line_numbers, include_dir, file_name):
-    tu = parse_file(code, include_dir, file_name)
-    lines = code.splitlines()
-
-    def prepare_modifications(cursor, removed_line_numbers):
-        for child in cursor.get_children():
-            if child.location.file and file_name not in child.location.file.name:
-                continue
-            is_function = child.kind == CursorKind.FUNCTION_DECL
-            is_complex = is_complex_structure(child)
-            continue_inner_search = True
-            if is_function or is_complex:
-                element_start = child.extent.start.line
-                element_end = child.extent.end.line
-                element_lines = [line for line in range(element_start, element_end + 1)]
-
-                any_contained = any(
-                    line in removed_line_numbers for line in element_lines
-                )
-                all_contained = all(
-                    line in removed_line_numbers for line in element_lines
-                )
-
-                # if all contained, the whole function was removed
-                if is_function:
-                    if not any_contained or all_contained:
-                        # Find the compound statement that is the body of the function
-                        for c in child.get_children():
-                            if c.kind == CursorKind.COMPOUND_STMT:
-                                # Calculate the start and end offsets for the body
-                                body_start_line = c.extent.start.line
-                                body_end_line = c.extent.end.line - 2
-                                # Store the offsets and the count of newlines to preserve formatting
-                                lines[body_start_line : body_end_line + 1] = [
-                                    ""
-                                    for _ in range(body_end_line - body_start_line + 1)
-                                ]
-                                break
-
-                if all_contained and len(element_lines) > 2:
-                    for line in element_lines:
-                        removed_line_numbers.remove(line)
-
-                if all_contained or not any_contained:
-                    continue_inner_search = False
-
-            if continue_inner_search:
-                prepare_modifications(child, removed_line_numbers)
-
-    modified_line_numbers = list(set(removed_line_numbers))
-    prepare_modifications(tu.cursor, modified_line_numbers)
-    return "\n".join(lines), modified_line_numbers
 
 
 def _normalize_code(text):
@@ -255,65 +221,140 @@ def get_function_or_statement_context(root_node, full_code, source_code, line_nu
         return node, get_code_from_extent(full_code, node.extent)
     return None, None
 
-
-def run_coccinelle_for_file_at_commit(
-    repo,
-    file_name,
-    commit,
-    modified_line_numbers,
-    temp_dir,
-    loaded_headers,
-    invalid_headers,
-    patches_to_skip=None,
-    save_headers=True,
-):
-    atoms = []
-    headers_dir = Path(temp_dir, "headers")
-    content = get_file_content_at_commit(repo, commit, file_name)
-    if save_headers:
-        save_headers_to_temp(
-            commit=commit,
-            output_dir=headers_dir,
-            repo=repo,
-            full_code=content,
-            loaded_headers=loaded_headers,
-            invalid_headers=invalid_headers,
-        )
-    shorter_content, modified_lines = parse_and_modify_functions(
-        content, modified_line_numbers, headers_dir, file_name
+def parse_file(code, include_dir, file_name):
+    index = Index.create()
+    tu = index.parse(
+        file_name,
+        args=["-x", "c", "-std=c11", "-nostdinc", "-w", "-fsyntax-only", f"-I{include_dir}"],
+        unsaved_files=[(file_name, code)],
     )
+    return tu
 
-    """ shorter_content, modified_lines = parse_and_reduce_code(
-        content, modified_line_numbers, headers_dir, file_name
-    ) """
+def get_references_on_lines(tu, target_lines):
+    """
+    Finds all referenced variables and called functions on the modified lines.
+    """
+    var_refs = []
+    funcs_called = []
+    for token in tu.get_tokens(extent=tu.cursor.extent):
+        if token.cursor.referenced and token.location.line in target_lines:
+            ref_kind = token.cursor.referenced.kind
+            if ref_kind in (CursorKind.VAR_DECL, CursorKind.PARM_DECL):
+                if token.cursor.referenced not in var_refs:
+                    var_refs.append(token.cursor.referenced)
+            elif ref_kind == CursorKind.FUNCTION_DECL:
+                if token.cursor.referenced not in funcs_called:
+                    funcs_called.append(token.cursor.referenced)
+    return var_refs, funcs_called
 
-    """ shorter_content, modified_lines = parse_and_modify_with_cscope(
-        content, modified_line_numbers, headers_dir, file_name
-    ) """
+def node_contains_var_reference(cursor, referenced_set):
+    ''' 
+    Checks tokens at cursor location to see if node contains 
+    references to vairables in the referenced set.
+    '''
+    for token in cursor.get_tokens():
+        if token.cursor.referenced and token.cursor.referenced in referenced_set:
+            return True
+    return False
 
-    # Define file paths within the temporary directory
-    input = Path(temp_dir, "input", file_name)
-    input.parent.mkdir(parents=True, exist_ok=True)
-    input.write_text(shorter_content)
 
-    output = Path(temp_dir, "output.csv")
-    input_dir = Path(temp_dir, "input")
-    # now, run coccinelle patches
+def node_is_referenced_func(cursor, func_set):
+    '''
+    Determines if the AST node is function contained in set
+    '''
+    return cursor.kind == CursorKind.FUNCTION_DECL and cursor in func_set
 
-    # task = partial(find_atoms, input_dir, output, None, PATCHES_TO_SKIP)
-    runtime = run_patches_and_generate_output(
-        input_dir, output, temp_dir, False, None, patches_to_skip, False
-    )
 
-    with open(output, mode="r", newline="") as file:
-        reader = csv.reader(file)
-        for row in reader:
-            if len(row) == 1:
-                continue
-            atom, path, start_line, start_col, end_line, end_col, code = row
-            file_name = path.split(f"{input_dir}/")[1]
-            if int(start_line) in modified_lines:
-                row[1] = file_name
-                atoms.append(row)
+def node_is_atomic(cursor):
+    return cursor.kind in [
+        CursorKind.BINARY_OPERATOR,
+        CursorKind.UNARY_OPERATOR,
+        CursorKind.DECL_STMT,
+        CursorKind.INIT_LIST_EXPR,
+        CursorKind.ARRAY_SUBSCRIPT_EXPR,
+        CursorKind.MEMBER_REF_EXPR,
+        CursorKind.CALL_EXPR,
+        CursorKind.CONDITIONAL_OPERATOR,
+        CursorKind.COMPOUND_ASSIGNMENT_OPERATOR,
+    ]
 
-    return atoms, runtime
+def strip_unrelated_code(cursor, lines, var_refs,funcs_called,removed_line_numbers, file_name):
+    """
+    Removes Functions that don't contain any modified lines
+    Or functions that are entirely removed/modified by the commit
+    Then strips the remaining functions
+    """
+    for child in cursor.get_children():
+        if not child.location.file or file_name not in child.location.file.name:
+            continue
+
+        start_line = child.extent.start.line
+        end_line = child.extent.end.line
+
+        #not sure this is neccessary
+        """ if node_is_referenced_func(child, funcs_called):
+            continue """
+
+        is_function = child.kind == CursorKind.FUNCTION_DECL
+        is_complex = is_complex_structure(child)
+        continue_inner_search = True
+        if is_function or is_complex:
+            element_start = child.extent.start.line
+            element_end = child.extent.end.line
+            element_lines = [line for line in range(element_start, element_end + 1)]
+
+            any_contained = any(
+                line in removed_line_numbers for line in element_lines
+            )
+            all_contained = all(
+                line in removed_line_numbers for line in element_lines
+            )
+
+            # if all contained, the whole function was removed
+            if is_function:
+                if not any_contained or all_contained:
+                    # Find the compound statement that is the body of the function
+                    for c in child.get_children():
+                        if c.kind == CursorKind.COMPOUND_STMT:
+                            # Calculate the start and end offsets for the body
+                            body_start_line = c.extent.start.line
+                            body_end_line = c.extent.end.line - 2
+                            # Store the offsets and the count of newlines to preserve formatting
+                            lines[body_start_line : body_end_line + 1] = [
+                                ""
+                                for _ in range(body_end_line - body_start_line + 1)
+                            ]
+                            break
+
+            if all_contained and len(element_lines) > 2:
+                for line in element_lines:
+                    removed_line_numbers.remove(line)
+
+            if all_contained or not any_contained:
+                continue_inner_search = False
+
+        else:
+            if not node_contains_var_reference(child, var_refs):
+                continue_inner_search = False
+                for i in range(start_line-1, end_line):
+                    lines[i] = ""
+
+        if continue_inner_search and not node_is_atomic(child):
+            strip_unrelated_code(child, lines, var_refs,funcs_called,removed_line_numbers, file_name)
+
+
+def parse_and_reduce_code(code, removed_line_numbers, include_dir, file_name):
+    '''
+    Uses Cindex AST to strip off code that is not relevant to any modified line.
+        - Keeps any functions that are called on the modified lines
+        - Keeps any AST node that contains a reference to a variable in the modified lines
+    '''
+    tu = parse_file(code, include_dir, file_name)
+    lines = code.splitlines()
+    modified_line_numbers = list(set(removed_line_numbers))
+    var_refs,funcs_called = get_references_on_lines(tu, modified_line_numbers)
+    strip_unrelated_code(tu.cursor, lines, var_refs, funcs_called,modified_line_numbers, file_name)
+    cleaned_code = "\n".join(lines)
+    return cleaned_code, modified_line_numbers
+
+

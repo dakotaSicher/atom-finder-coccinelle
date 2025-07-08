@@ -291,7 +291,7 @@ def combine_results(results_folder):
     combine_pattern("long_commits*.csv", long_combined)
 
 #profiling batch processing of commits
-def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = 1):
+def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = None):
 
     stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
     output_dir.mkdir(exist_ok=True)

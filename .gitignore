@@ -169,3 +169,4 @@ output.csv
 **/cscope
 profile_*
 long_commits.json
+parsed_*

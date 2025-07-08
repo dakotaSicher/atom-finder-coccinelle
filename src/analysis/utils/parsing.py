@@ -28,6 +28,11 @@ def save_headers_to_temp(
     _extract_headers(
         output_dir, full_code, repo, commit, loaded_headers, invalid_headers
     )
+    """ headers = _extract_linux_headers(
+        output_dir, full_code, repo, commit, loaded_headers, invalid_headers, arch, source_dir
+    ) """
+    #print("headers:")
+    #print(headers)
 
 
 def save_all_headers(output_dir, commit, repo):
@@ -51,6 +56,93 @@ def _save_all_headers(output_dir, tree, repo, path_prefix):
             path.parent.mkdir(exist_ok=True, parents=True)
             path.write_text(file_content)
 
+
+def save_header_directories(output_dir, commit, repo, include_paths):
+    """
+    Save entire include directories (e.g., 'include', 'arch/x/include') 
+    from a specific commit in a Git repo to a temporary output directory.
+    
+    :param repo: pygit2 Repository object.
+    :param commit: pygit2 Commit object.
+    :param include_paths: list of include paths (relative to root of repo).
+    :param output_dir: Path to output directory where headers will be saved.
+    """
+    tree = commit.tree
+
+    for include_path in include_paths:
+        try:
+            sub_tree = _get_tree_at_path(repo, tree, include_path)
+        except KeyError:
+            print(f"[WARN] '{include_path}' not found in commit tree.")
+            continue
+
+        _save_tree_to_dir(repo, sub_tree, Path(output_dir) / include_path)
+
+def _get_tree_at_path(repo, tree, path):
+    """Walks the tree to the subdirectory specified by `path`."""
+    for part in path.strip("/").split("/"):
+        tree_entry = tree[part]
+        tree = repo.get(tree_entry.id)
+    return tree
+
+def _save_tree_to_dir(repo, tree, target_dir, relative_path=""):
+    """
+    Recursively saves a Git tree to a directory.
+    
+    :param repo: pygit2 Repo object
+    :param tree: pygit2 Tree object
+    :param target_dir: Path where to save the contents
+    :param relative_path: Used internally to preserve subdirectories
+    """
+    for entry in tree:
+        full_path = Path(target_dir) / relative_path / entry.name
+        if entry.type == pygit2.GIT_OBJECT_TREE:
+            _save_tree_to_dir(repo, repo.get(entry.id), target_dir, Path(relative_path) / entry.name)
+        elif entry.type == pygit2.GIT_OBJECT_BLOB:
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            blob = repo.get(entry.id)
+            full_path.write_bytes(blob.data)
+
+
+def _extract_linux_headers(output_dir, code, repo, commit, processed, invalid, include_paths):
+    """
+    Recursively extract all unique header file names from the C code.
+
+    :param code: C code from which to extract header files.
+    :param base_path: The base directory where header files are searched (as a Path object).
+    :param processed: A set to keep track of processed header files to avoid cyclic includes.
+    :return: A set of all header files included in the code, directly or indirectly.
+    """
+    header_pattern = re.compile(r'#\s*include\s+[<"]([^>"]+)[>"]')
+    headers = set(header_pattern.findall(code))
+    all_headers = set(headers)
+
+    for header in headers:
+        if header in processed[commit] or header in invalid[commit]:
+            continue
+        processed[commit].append(header)
+        found = False
+        for include_dir in include_paths:
+            header_path = Path(include_dir) / header
+            file_content = get_file_content_at_commit(repo, commit, str(header_path))
+            if file_content != "File not found in the specified commit.":
+                found = True
+                break
+        if not found:
+            print(f"Header file not found: {header}")
+        try:
+            path = Path(output_dir / header)
+            path.parent.mkdir(exist_ok=True, parents=True)
+            path.write_text(file_content)
+        except Exception as e:
+            print(f"Cannot load {header} at {commit} due to {e}")
+            invalid[commit].append(header)
+            continue
+        included_headers = _extract_headers(
+            output_dir, file_content, repo, commit, processed, invalid
+        )
+        all_headers.update(included_headers)
+    return all_headers
 
 def _extract_headers(output_dir, code, repo, commit, processed, invalid):
     """

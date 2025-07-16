@@ -183,7 +183,7 @@ def run_patches_and_generate_output(
             for row in data_list:
                 writer.writerow(row)
 
-    start = time.time()
+    #start = time.time()
     for patch_to_run in patches_to_run:
         full_patch_path = patch_to_run.get_full_path(cocci_dir)
         temp_output_file = Path(temp_dir, f"{full_patch_path.stem}.csv")
@@ -201,7 +201,7 @@ def run_patches_and_generate_output(
             _write_lines_to_file(output_file, atoms)
         else:
             all_atoms.extend(atoms)
-    stop = time.time()
+    #stop = time.time()
 
     if not split_output:
         _write_lines_to_file(output_path, all_atoms)
@@ -211,4 +211,4 @@ def run_patches_and_generate_output(
     else:
        empty_directory(temp_dir, files_to_keep=[output_path])
 
-    return stop - start
+    #return stop - start

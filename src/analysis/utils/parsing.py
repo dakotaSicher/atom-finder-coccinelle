@@ -28,11 +28,6 @@ def save_headers_to_temp(
     _extract_headers(
         output_dir, full_code, repo, commit, loaded_headers, invalid_headers
     )
-    """ headers = _extract_linux_headers(
-        output_dir, full_code, repo, commit, loaded_headers, invalid_headers, arch, source_dir
-    ) """
-    #print("headers:")
-    #print(headers)
 
 
 def save_all_headers(output_dir, commit, repo):
@@ -55,53 +50,6 @@ def _save_all_headers(output_dir, tree, repo, path_prefix):
             file_content = entry.read_raw().decode()
             path.parent.mkdir(exist_ok=True, parents=True)
             path.write_text(file_content)
-
-
-def save_header_directories(output_dir, commit, repo, include_paths):
-    """
-    Save entire include directories (e.g., 'include', 'arch/x/include') 
-    from a specific commit in a Git repo to a temporary output directory.
-    
-    :param repo: pygit2 Repository object.
-    :param commit: pygit2 Commit object.
-    :param include_paths: list of include paths (relative to root of repo).
-    :param output_dir: Path to output directory where headers will be saved.
-    """
-    tree = commit.tree
-
-    for include_path in include_paths:
-        try:
-            sub_tree = _get_tree_at_path(repo, tree, include_path)
-        except KeyError:
-            print(f"[WARN] '{include_path}' not found in commit tree.")
-            continue
-
-        _save_tree_to_dir(repo, sub_tree, Path(output_dir) / include_path)
-
-def _get_tree_at_path(repo, tree, path):
-    """Walks the tree to the subdirectory specified by `path`."""
-    for part in path.strip("/").split("/"):
-        tree_entry = tree[part]
-        tree = repo.get(tree_entry.id)
-    return tree
-
-def _save_tree_to_dir(repo, tree, target_dir, relative_path=""):
-    """
-    Recursively saves a Git tree to a directory.
-    
-    :param repo: pygit2 Repo object
-    :param tree: pygit2 Tree object
-    :param target_dir: Path where to save the contents
-    :param relative_path: Used internally to preserve subdirectories
-    """
-    for entry in tree:
-        full_path = Path(target_dir) / relative_path / entry.name
-        if entry.type == pygit2.GIT_OBJECT_TREE:
-            _save_tree_to_dir(repo, repo.get(entry.id), target_dir, Path(relative_path) / entry.name)
-        elif entry.type == pygit2.GIT_OBJECT_BLOB:
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            blob = repo.get(entry.id)
-            full_path.write_bytes(blob.data)
 
 
 def _extract_linux_headers(output_dir, code, repo, commit, processed, invalid, include_paths):
@@ -143,6 +91,7 @@ def _extract_linux_headers(output_dir, code, repo, commit, processed, invalid, i
         )
         all_headers.update(included_headers)
     return all_headers
+
 
 def _extract_headers(output_dir, code, repo, commit, processed, invalid):
     """
@@ -375,13 +324,6 @@ def run_coccinelle_for_file_at_commit(
         content, modified_line_numbers, headers_dir, file_name
     )
 
-    """ shorter_content, modified_lines = parse_and_reduce_code(
-        content, modified_line_numbers, headers_dir, file_name
-    ) """
-
-    """ shorter_content, modified_lines = parse_and_modify_with_cscope(
-        content, modified_line_numbers, headers_dir, file_name
-    ) """
 
     # Define file paths within the temporary directory
     input = Path(temp_dir, "input", file_name)
@@ -393,7 +335,7 @@ def run_coccinelle_for_file_at_commit(
     # now, run coccinelle patches
 
     # task = partial(find_atoms, input_dir, output, None, PATCHES_TO_SKIP)
-    runtime = run_patches_and_generate_output(
+    run_patches_and_generate_output(
         input_dir, output, temp_dir, False, None, patches_to_skip, False
     )
 
@@ -408,4 +350,4 @@ def run_coccinelle_for_file_at_commit(
                 row[1] = file_name
                 atoms.append(row)
 
-    return atoms, runtime
+    return atoms

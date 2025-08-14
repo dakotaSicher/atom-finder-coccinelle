@@ -1,10 +1,12 @@
 import csv
 import pygit2
+import os
 from pathlib import Path
 
 from clang.cindex import Index, CursorKind, TokenKind, Config
 from src.analysis.utils.git import get_file_content_at_commit
 from src.run_cocci import run_patches_and_generate_output
+from src.log import logger
 
 
 Config.set_library_file("/usr/lib/llvm-14/lib/libclang-14.so.1")
@@ -22,6 +24,8 @@ def save_header_directories(output_dir, commit, repo, include_paths):
     tree = commit.tree
 
     for include_path in include_paths:
+        if 'generated' in include_path:
+            continue
         try:
             sub_tree = _get_tree_at_path(repo, tree, include_path)
         except KeyError:
@@ -105,43 +109,44 @@ def print_ast_for_modified(cursor, modified_lines, indent=0):
         print_ast_for_modified(child, modified_lines, indent + 1)
 ############################################
 def parse_file(code, include_dir, include_paths, build_args, file_name):
+    """
+    -I./arch/powerpc/include 
+    -I./arch/powerpc/include/generated 
+    -I./include 
+    -I./include 
+    -I./arch/powerpc/include/uapi 
+    -I./arch/powerpc/include/generated/uapi 
+    -I./include/uapi 
+    -I./include/generated/uapi 
+    -include ./include/linux/compiler-version.h -include ./include/linux/kconfig.h -include ./include/linux/compiler_types.h"""
     index = Index.create()
-    include_args = [f"-I{include_dir}/{ipath}" for ipath in include_paths]
+    linux_dir = "/home/atoms/projects/linux"
+    other_includes = []#[f"-include {include_dir}/include/linux/compiler-version.h", f"-include {include_dir}/include/linux/kconfig.h", f"-include {include_dir}/include/linux/compiler_types.h"]
+    include_args = []
+    for include_path in include_paths:
+        if 'generated' in include_path:
+            include_args += [f"-I{linux_dir}/{include_path}"]
+        else:
+            include_args += [f"-I{include_dir}/{include_path}"]
+    #include_args = [f"-I{include_dir}/{ipath}" for ipath in include_paths]
     tu = index.parse(
         file_name,
-        args=["-x", "c", "-std=c11", "-w", "-nostdinc", "-fsyntax-only","-ferror-limit=0"] + include_args + build_args,
+        args=[
+            "-x", "c",
+            "-std=c11",
+            "-nostdinc",
+            "-fsyntax-only",
+            "-ferror-limit=0"
+        ] + build_args + include_args + other_includes,
         unsaved_files=[(file_name, code)],
     )
     ##########################################
     #debug 
-    """ for d in tu.diagnostics:
+    for d in tu.diagnostics:
         print(d)
-    for token in tu.get_tokens(extent=tu.cursor.extent):
-        if 972 <= token.location.line <= 996: #commit/file specific
-            print(f"{token.spelling} - {token.kind} - {token.cursor.kind} - {token.cursor.referenced}")
-    input(...) """
     ##########################################
+    input(...)
     return tu
-
-def _get_references_on_lines(tu, target_lines):
-    """
-    Finds all referenced variables and called functions on the modified lines.
-    """
-    var_refs = []
-    funcs_called = []
-    for token in tu.get_tokens(extent=tu.cursor.extent):
-        if token.kind is not TokenKind.IDENTIFIER:
-            continue
-        if token.cursor.referenced and (token.location.line in target_lines):
-            ref_kind = token.cursor.referenced.kind
-            if ref_kind in [CursorKind.VAR_DECL, CursorKind.PARM_DECL]:
-                if token.cursor.referenced not in var_refs:
-                    print(token.spelling, token.location.line)
-                    var_refs.append(token.cursor.referenced)
-            elif ref_kind == CursorKind.FUNCTION_DECL:
-                if token.cursor.referenced not in funcs_called:
-                    funcs_called.append(token.cursor.referenced)
-    return var_refs, funcs_called
 
 def get_references_on_lines(cursor, target_lines):
     """
@@ -369,14 +374,35 @@ def run_coccinelle_for_file_at_commit_aggressive(
 
     content = get_file_content_at_commit(repo, commit, file_name)
 
+
     include_paths = [str(Path(file_name).parent)]
+    build_args = []
     if(True):
         build_args = [ "-D__KERNEL__"]
     if arch is not None:
-        include_paths += [f"arch/{arch}/include",f"arch/{arch}/include/uapi"]
         build_args += [f"-D__{arch}__"]
-    include_paths += ["include","include/uapi"]
-
+        include_paths += [f"arch/{arch}/include",f"arch/{arch}/include/generated"]
+        include_paths += ["include"]
+        include_paths += [f"arch/{arch}/include/uapi",f"arch/{arch}/include/generated/uapi"]
+        include_paths += ["include/uapi","include/generated/uapi"]
+    else:
+        include_paths += ["include"]
+        include_paths += ["include/uapi","include/generated/uapi"]
+    
+    """ include_paths = [str(Path(file_name).parent)]
+    build_args = []
+    if(True):
+        build_args = [ "-D__KERNEL__"]
+    if arch is not None:
+        build_args += [f"-D__{arch}__"]
+        include_paths += [f"arch/{arch}/include"]
+        include_paths += ["include"]
+        include_paths += [f"arch/{arch}/include/uapi"]
+        include_paths += ["include/uapi"]
+    else:
+        include_paths += ["include"]
+        include_paths += ["include/uapi"] """
+    
     save_header_directories(
         commit=commit,
         output_dir=headers_dir,
@@ -384,6 +410,14 @@ def run_coccinelle_for_file_at_commit_aggressive(
         include_paths=include_paths
         )
     
+
+ 
+    base_name = Path(file_name).name 
+    logger.info(base_name)
+    """file_dir_name = base_name.replace('.', '_')
+    output_dir = Path(f"parsed_{commit.id}") / file_dir_name
+    output_dir.mkdir(parents=True, exist_ok=True) """
+
     shorter_content, modified_lines = parse_and_reduce_code(
                 content, modified_line_numbers, headers_dir, include_paths, build_args, file_name,
             )
@@ -412,3 +446,4 @@ def run_coccinelle_for_file_at_commit_aggressive(
                 atoms.append(row)
 
     return atoms
+

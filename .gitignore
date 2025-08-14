@@ -169,3 +169,4 @@ output.csv
 **/cscope
 profile_*
 parsed_*
+output_*

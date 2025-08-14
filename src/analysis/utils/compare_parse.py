@@ -14,7 +14,8 @@ from pathlib import Path
 from collections import defaultdict
 from src.log import logger
 from src.analysis.utils.git import get_diff, get_file_content_at_commit
-from src.analysis.utils.parsing import save_headers_to_temp, parse_and_modify_functions, parse_and_reduce_code,save_all_headers,save_header_directories
+from src.analysis.utils.parsing import save_headers_to_temp, parse_and_modify_functions, parse_and_reduce_code,save_all_headers
+from src.analysis.utils.parsing_agressive import save_header_directories
 from src.analysis.utils.parsing_with_cscope import parse_and_modify_with_cscope
 from src.utils import empty_directory
 from src.run_cocci import run_patches_and_generate_output

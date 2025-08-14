@@ -11,6 +11,7 @@ from pathlib import Path
 from timelength import TimeLength
 from src import ROOT_DIR
 from src.analysis.utils.parsing import run_coccinelle_for_file_at_commit
+from src.analysis.utils.parsing_no_include import run_coccinelle_for_file_at_commit_no_inlcude
 from src.analysis.utils.parsing_agressive import run_coccinelle_for_file_at_commit_aggressive
 from src.analysis.utils.git import get_diff
 from src.analysis.utils.utils import append_rows_to_csv, append_to_json, safely_load_json
@@ -37,7 +38,7 @@ def compare_method_atoms(base_atoms, base_runtime, new_atoms, new_runtime, outpu
     with open(output, "a", newline="") as f:
         writer = csv.writer(f)
         runtime_diff = new_runtime - base_runtime
-        writer.writerow([str(commit_sha), runtime_diff])
+        writer.writerow([str(commit_sha), base_runtime, runtime_diff])
         
         # Convert atoms to tuples for set operations (if not already)
         base_set = set(tuple(atom) for atom in base_atoms)
@@ -196,20 +197,20 @@ def get_removed_lines(repo_path, commits, output, output_new, output_compare,pro
             continue
         try:
             commit = repo.get(commit_sha) 
-            start = time.time() #
+            """ start = time.time() #
             atoms = find_removed_atoms(repo, commit)
-            runtime = time.time() - start #
+            runtime = time.time() - start # """
 
             start_new = time.time() # 
             atoms_new = find_removed_atoms_new(repo,commit) #
             runtime_new = time.time() - start_new #
 
-            compare_method_atoms(atoms, runtime, atoms_new, runtime_new, output_compare, commit_sha)
+            #compare_method_atoms(atoms, runtime, atoms_new, runtime_new, output_compare, commit_sha)
 
             count += 1
-            if atoms:
+            """ if atoms:
                 append_rows_to_csv(output, atoms)
-                count_w_atoms += 1
+                count_w_atoms += 1 """
             if atoms_new: #
                 append_rows_to_csv(output_new, atoms_new) #
             logger.info(f"Processed {count} commits, {count_w_atoms} with atoms.")
@@ -365,23 +366,31 @@ def combine_results(results_folder):
     combine_pattern("compare*.csv", compared_combined)
 
 def get_runtime_difference(compare_file):
-    """
-    Sums all runtime differences from the compare_file.
-    Assumes each runtime difference is in the second column of each row.
-    """
-    total = 0.0
+    #writer.writerow([str(commit_sha), base_runtime, runtime_diff])
+    total_diff = 0.0
+    total_base = 0.0
+    rows = []
     with open(compare_file, newline="") as f:
         reader = csv.reader(f)
         for row in reader:
-            # Only sum rows that look like [commit_sha, runtime_diff]
-            if len(row) >= 2:
+            rows.append(row)
+            if len(row) == 3:
                 try:
-                    diff = float(row[1])
-                    total += diff
+                    base = float(row[1])
+                    diff = float(row[2])
+                    total_base += base
+                    total_diff += diff
                 except ValueError:
-                    continue  # skip rows that don't have a float in the second column
-    print(f"Total runtime difference: {total}")
-    return total
+                    continue 
+
+    with open(compare_file, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["original runtime",total_base,"runtime change", total_diff])
+        writer.writerows(rows)
+
+    print(f"Base Runtime: {total_base}")
+    print(f"Total runtime difference: {total_diff}")
+    return total_diff
 
 #profiling batch processing of commits
 def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = None):
@@ -391,7 +400,7 @@ def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     commits_file_path = output_dir / "commits.json"
     long_commits_path = ROOT_DIR / "long_commits.json"
     error_commits_path = ROOT_DIR / "error_commits.json"
-    commit_file = error_commits_path
+    commit_file = commits_file_path
 
     """ commits = safely_load_json(commits_file_path)
     if not commits or commits[-1] != stop_commit:
@@ -404,9 +413,9 @@ def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     errors_dir = results_dir / ERRORS_FILE_DIR
     errors_dir.mkdir(exist_ok=True)
 
-    commits = json.loads(commit_file.read_text())
-    # commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
-    #commits = ["59ba025948be2a92e8bc9ae1cbdaf197660bd508"]
+    #commits = json.loads(commit_file.read_text())
+    #commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
+    commits = ["59ba025948be2a92e8bc9ae1cbdaf197660bd508"]
     #commits = ["d301f164c3fbff611bd71f57dfa553b9219f0f5e"]
 
     if len(commits) == 1 or cpus == 1:
@@ -424,5 +433,6 @@ def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
         get_runtime_difference(results_dir / "compare.csv")
 
 if __name__ == "__main__":
-    profile_linux_fixes(Path("../projects/linux/"), Path("./output_errors"), "six months", 1)
+    profile_linux_fixes(Path("../projects/linux/"), Path("./output_test"), "3 months", 1)
     #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_comp"), "one month",1)',"profile_linux_fixes_new" )
+    

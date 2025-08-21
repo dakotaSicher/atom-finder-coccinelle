@@ -103,46 +103,33 @@ def parse_and_modify_functions(code, removed_line_numbers, include_dir, file_nam
         for child in cursor.get_children():
             if child.location.file and file_name not in child.location.file.name:
                 continue
-            is_function = child.kind == CursorKind.FUNCTION_DECL
-            is_complex = is_complex_structure(child)
-            continue_inner_search = True
-            if is_function or is_complex:
+            if child.kind == CursorKind.FUNCTION_DECL:
                 element_start = child.extent.start.line
                 element_end = child.extent.end.line
                 element_lines = [line for line in range(element_start, element_end + 1)]
 
-                any_contained = any(
-                    line in removed_line_numbers for line in element_lines
-                )
-                all_contained = all(
-                    line in removed_line_numbers for line in element_lines
-                )
+                any_contained = any(line in removed_line_numbers for line in element_lines)
+                all_contained = all(line in removed_line_numbers for line in element_lines)
 
-                # if all contained, the whole function was removed
-                if is_function:
-                    if not any_contained or all_contained:
-                        # Find the compound statement that is the body of the function
-                        for c in child.get_children():
-                            if c.kind == CursorKind.COMPOUND_STMT:
-                                # Calculate the start and end offsets for the body
-                                body_start_line = c.extent.start.line
-                                body_end_line = c.extent.end.line - 2
-                                # Store the offsets and the count of newlines to preserve formatting
-                                lines[body_start_line : body_end_line + 1] = [
-                                    ""
-                                    for _ in range(body_end_line - body_start_line + 1)
-                                ]
-                                break
+
+                if not any_contained or all_contained:
+                    # Find the compound statement that is the body of the function
+                    for c in child.get_children():
+                        if c.kind == CursorKind.COMPOUND_STMT:
+                            # Calculate the start and end offsets for the body
+                            body_start_line = c.extent.start.line
+                            body_end_line = c.extent.end.line - 2
+                            # Store the offsets and the count of newlines to preserve formatting
+                            lines[body_start_line : body_end_line + 1] = [
+                                ""
+                                for _ in range(body_end_line - body_start_line + 1)
+                            ]
+                            break
 
                 if all_contained and len(element_lines) > 2:
                     for line in element_lines:
                         removed_line_numbers.remove(line)
 
-                if all_contained or not any_contained:
-                    continue_inner_search = False
-
-            if continue_inner_search:
-                prepare_modifications(child, removed_line_numbers)
 
     modified_line_numbers = list(set(removed_line_numbers))
     prepare_modifications(tu.cursor, modified_line_numbers)

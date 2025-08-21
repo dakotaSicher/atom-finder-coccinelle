@@ -97,6 +97,8 @@ def run_cocci(cocci_patch_path, c_input_path, output_file=None, opts=None):
 
     except subprocess.CalledProcessError as e:
         raise RunCoccinelleError(f"An error occurred while running patch {cocci_patch_path}: {e}")
+    except subprocess.TimeoutExpired as e:
+        raise RunCoccinelleError(f"An error occurred while running patch {cocci_patch_path}: {e}")
 
 
 def read_csv_generator(file_path):

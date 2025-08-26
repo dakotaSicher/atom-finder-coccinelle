@@ -264,10 +264,11 @@ def run_coccinelle_for_file_at_commit(
             loaded_headers=loaded_headers,
             invalid_headers=invalid_headers,
         )
+    print("Entering parse_and_modify_functions")
     shorter_content, modified_lines = parse_and_modify_functions(
         content, modified_line_numbers, headers_dir, file_name
     )
-
+    print("Returning from parse_and_modify_functions")
     # Define file paths within the temporary directory
     input = Path(temp_dir, "input", file_name)
     input.parent.mkdir(parents=True, exist_ok=True)
@@ -278,10 +279,11 @@ def run_coccinelle_for_file_at_commit(
     # now, run coccinelle patches
 
     # task = partial(find_atoms, input_dir, output, None, PATCHES_TO_SKIP)
+    print("Entering run_patches_and_generate_output")
     run_patches_and_generate_output(
         input_dir, output, temp_dir, False, None, patches_to_skip, False
     )
-
+    print("Returning from run_patches_and_generate_output")
     with open(output, mode="r", newline="") as file:
         reader = csv.reader(file)
         for row in reader:

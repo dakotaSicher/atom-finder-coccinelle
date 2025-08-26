@@ -94,11 +94,12 @@ def run_cocci(cocci_patch_path, c_input_path, output_file=None, opts=None):
             cmd.append(">>")
             cmd.append(str(output_file))
         run(cmd)
-
+    except subprocess.TimeoutExpired as e:
+        print(f"{c_input_path} returned from subprocess.run on timeout")
+        raise RunCoccinelleError(f"An error occurred while running patch {cocci_patch_path}: {e}")
     except subprocess.CalledProcessError as e:
         raise RunCoccinelleError(f"An error occurred while running patch {cocci_patch_path}: {e}")
-    except subprocess.TimeoutExpired as e:
-        raise RunCoccinelleError(f"An error occurred while running patch {cocci_patch_path}: {e}")
+
 
 
 def read_csv_generator(file_path):
@@ -190,9 +191,12 @@ def run_patches_and_generate_output(
         if not full_patch_path.is_file():
             continue
         try:
+            print("Entering run_cocci")
             run_cocci(full_patch_path, input_path, output_file=temp_output_file)
+            print("Returning from run_cocci")
         except RunCoccinelleError as e:
             # log the error and continue
+            print(f"Returned from run_cocci with error: {str(e)}")
             logging.error(str(e))
         
         atoms = postprocess_and_generate_output(temp_output_file, patch, remove_end_line_and_col)

@@ -59,7 +59,9 @@ def run(command, **kwargs):
             options.update(universal_newlines=True)
 
         options.update(kwargs)
+        print("Calling subprocess.run")
         completed = subprocess.run(" ".join(command),  timeout=20, **options)
+        print("Returned from subprocess.run successfully")
     except subprocess.CalledProcessError as err:
         if err.stdout:
             logging.error(err.stdout)

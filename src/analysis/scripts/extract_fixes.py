@@ -134,9 +134,6 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path, s
     repo = pygit2.Repository(str(repo_path))
     processed = load_processed_data(processed_path)
     count,number_files, count_w_atoms = processed["count"],processed["number_files"], processed["count_w_atoms"]
-    first_commit = processed["last_commit"]
-    found_first_commit = first_commit is None
-
 
     processing_info = {
         "current_commit": None, 
@@ -153,11 +150,6 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path, s
         processed.update(processing_info)
         processed_path.write_text(json.dumps(processed))
 
-        if first_commit and not found_first_commit:
-            found_first_commit = commit_sha == first_commit
-            continue
-        if not found_first_commit:
-            continue
         try:
             commit = repo.get(commit_sha)
             atoms,skipped,num_files = find_removed_atoms(repo, commit, timeout, jobs)
@@ -219,8 +211,6 @@ def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, e
     repo = pygit2.Repository(str(repo_path))
     processed = load_processed_data(processed_path)
     count, number_files, count_w_atoms = processed["count"],processed["number_files"], processed["count_w_atoms"]
-    """ first_commit = processed["last_commit"]
-    found_first_commit = first_commit is None """
 
     processing_info = {
         "current_commit": None, 
@@ -240,12 +230,7 @@ def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, e
         processing_info["start_time"] = datetime.now().strftime("%H:%M:%S")
         processed.update(processing_info)
         processed_path.write_text(json.dumps(processed))
-        
-        """ if first_commit and not found_first_commit:
-            found_first_commit = commit_sha == first_commit
-            continue
-        if not found_first_commit:
-            continue """
+
         try:
             commit = repo.get(commit_sha)
             atoms,skipped,num_files = find_removed_atoms(repo, commit, timeout, jobs)

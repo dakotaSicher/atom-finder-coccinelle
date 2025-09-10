@@ -80,7 +80,7 @@ def _is_subset(current, previous):
     return False
 
 
-def run_cocci(cocci_patch_path, c_input_path, output_file=None, opts=None):
+def run_cocci(cocci_patch_path, c_input_path, output_file=None, opts=None, timeout = None, jobs= 4):
     # keep all paths for this file to avoid additional imports from pathlib
     logging.debug(f"Running patch: {cocci_patch_path} against {c_input_path}")
     try:
@@ -88,15 +88,15 @@ def run_cocci(cocci_patch_path, c_input_path, output_file=None, opts=None):
         if cocci_patch_path in [patch.value for patch in include_headers_patches]:
             opts.append("--include-headers")
 
-        cmd = ["spatch","--jobs 4", "--sp-file", str(cocci_patch_path), str(c_input_path)] + opts
+        cmd = ["spatch",f"--jobs {jobs}", "--sp-file", str(cocci_patch_path), str(c_input_path)] + opts
         if output_file is not None:
             output_file.touch()
             cmd.append(">>")
             cmd.append(str(output_file))
-        run(cmd)
-    except subprocess.TimeoutExpired as e:
-        print(f"{c_input_path} returned from subprocess.run on timeout")
-        raise RunCoccinelleError(f"An error occurred while running patch {cocci_patch_path}: {e}")
+        run(cmd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logging.warning(f"{c_input_path}: {cocci_patch_path} timed out")
+        raise 
     except subprocess.CalledProcessError as e:
         raise RunCoccinelleError(f"An error occurred while running patch {cocci_patch_path}: {e}")
 
@@ -163,7 +163,9 @@ def run_patches_and_generate_output(
         patch: Optional[CocciPatch] = None,  
         patches_to_skip: Optional[list] = None, 
         remove_end_line_and_col: Optional[bool]=True, 
-        cocci_dir:Optional[Path]=COCCI_DIR
+        cocci_dir:Optional[Path]=COCCI_DIR,
+        timeout = None,
+        jobs = 4,
 ):
     logging.debug("Running patches")
     patches_to_skip = patches_to_skip or []
@@ -184,6 +186,7 @@ def run_patches_and_generate_output(
 
             for row in data_list:
                 writer.writerow(row)
+    timedout_patches = []
 
     for patch_to_run in patches_to_run:
         full_patch_path = patch_to_run.get_full_path(cocci_dir)
@@ -191,12 +194,11 @@ def run_patches_and_generate_output(
         if not full_patch_path.is_file():
             continue
         try:
-            print("Entering run_cocci")
-            run_cocci(full_patch_path, input_path, output_file=temp_output_file)
-            print("Returning from run_cocci")
+            run_cocci(full_patch_path, input_path, output_file=temp_output_file, timeout=timeout,jobs=jobs)
+        except subprocess.TimeoutExpired:
+            timedout_patches.append(patch_to_run.value)
         except RunCoccinelleError as e:
             # log the error and continue
-            print(f"Returned from run_cocci with error: {str(e)}")
             logging.error(str(e))
         
         atoms = postprocess_and_generate_output(temp_output_file, patch, remove_end_line_and_col)
@@ -213,3 +215,6 @@ def run_patches_and_generate_output(
         shutil.rmtree(temp_dir)
     else:
        empty_directory(temp_dir, files_to_keep=[output_path])
+
+    return timedout_patches
+    

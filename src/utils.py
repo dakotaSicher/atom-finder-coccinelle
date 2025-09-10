@@ -46,7 +46,7 @@ def empty_directory(dir_path: Path, files_to_keep: Optional[List[Path]]=None):
                 file.unlink()
 
 
-def run(command, **kwargs):
+def run(command, timeout=None, **kwargs):
     """Run a command and return its output.
     In order to get bytes, call this command with `raw=True` argument.
     """
@@ -59,9 +59,7 @@ def run(command, **kwargs):
             options.update(universal_newlines=True)
 
         options.update(kwargs)
-        print("Calling subprocess.run")
-        completed = subprocess.run(" ".join(command),  timeout=20, **options)
-        print("Returned from subprocess.run successfully")
+        completed = subprocess.run(" ".join(command),  timeout=timeout, **options)
     except subprocess.CalledProcessError as err:
         if err.stdout:
             logging.error(err.stdout)
@@ -74,8 +72,8 @@ def run(command, **kwargs):
             err.output,
         )
         raise err
-    except subprocess.TimeoutExpired as err:
-        raise err
+    except subprocess.TimeoutExpired:
+        raise
 
     if completed.returncode != 0:
         return None

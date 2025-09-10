@@ -25,7 +25,7 @@ PATCHES_TO_SKIP = [CocciPatch.OMITTED_CURLY_BRACES]
 def _timeout_handler(signum, frame):
     raise TimeoutError("find_removed_atoms timed out")
 
-def find_removed_atoms(repo, commit):
+def find_removed_atoms(repo, commit, timeout, jobs):
     """
     Get removed lines (lines removed in a commit) by comparing the commit to its parent.
     """
@@ -40,11 +40,12 @@ def find_removed_atoms(repo, commit):
 
     parent = commit.parents[0]
     output = []
+    skipped = []
     with tempfile.TemporaryDirectory() as temp_dir:
         for file_name, removed in removed_lines.items():
             removed_line_numbers = [line.old_lineno for line in removed]
-            print("Entering run_coccinelle_for_file_at_commit")
-            atoms = run_coccinelle_for_file_at_commit(
+
+            atoms, skipped_patches = run_coccinelle_for_file_at_commit(
                 repo,
                 file_name,
                 parent,
@@ -52,15 +53,20 @@ def find_removed_atoms(repo, commit):
                 temp_dir,
                 loaded_headers,
                 invalid_headers,
+                timeout,
+                jobs,
                 PATCHES_TO_SKIP,
             )
-            print("Returned from run_coccinelle_for_file_at_commit")
+
             for row in atoms:
                 atom, path, start_line, start_col, end_line, end_col, code = row
                 output_row = [atom, file_name, str(parent.id), start_line, start_col, code]
                 output.append(output_row)
+            if skipped_patches:
+                row = [commit.id, file_name] + skipped_patches
+                skipped.append(row)
 
-    return output
+    return output, skipped, len(removed_lines)
 
 
 def iterate_commits_and_extract_removed_code(repo_path, stop_commit, commits_file_path ,history_length = None):
@@ -117,29 +123,30 @@ def load_processed_data(processed_path):
     """Load processed data from a JSON file."""
     if processed_path.is_file():
         return json.loads(processed_path.read_text())
-    return {"count": 0, "count_w_atoms": 0, "last_commit": None}
+    return {"count": 0, "count_w_atoms": 0, "last_commit": None,"number_files": 0,}
 
 
 '''
 Single thread version 
 '''
-def get_removed_lines(repo_path, commits, output, processed_path, errors_path, timeout = 60):
+def get_removed_lines(repo_path, commits, output, processed_path, errors_path, skipped_path, timeout, jobs):
     """Process commits and extract lines removed in each commit."""
     repo = pygit2.Repository(str(repo_path))
     processed = load_processed_data(processed_path)
-    count, count_w_atoms = processed["count"], processed["count_w_atoms"]
+    count,number_files, count_w_atoms = processed["count"],processed["number_files"], processed["count_w_atoms"]
     first_commit = processed["last_commit"]
     found_first_commit = first_commit is None
-    skipped_commits = []
+
 
     processing_info = {
         "current_commit": None, 
         "start_time": None,
         "count": None,
+        "number_files": None,
         "count_w_atoms": None,
         "last_commit": None,
     }
-    signal.signal(signal.SIGALRM, _timeout_handler)
+
     for commit_sha in commits:
         processing_info["current_commit"] = commit_sha
         processing_info["start_time"] = datetime.now().strftime("%H:%M:%S")
@@ -152,34 +159,27 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path, t
         if not found_first_commit:
             continue
         try:
-            signal.alarm(timeout)
             commit = repo.get(commit_sha)
-            print("Entering find_removed_atoms")
-            atoms = find_removed_atoms(repo, commit)
-            print("Returned from find_removed_atoms")
-            signal.alarm(0)
+            atoms,skipped,num_files = find_removed_atoms(repo, commit, timeout, jobs)
+            number_files += num_files
             count += 1
             if atoms:
                 append_rows_to_csv(output, atoms)
                 count_w_atoms += 1
-            logger.info(f"{datetime.now().strftime("%H:%M:%S")}: Processed {count} commits, {count_w_atoms} with atoms.")
-        except TimeoutError:
-            skipped_commits.append(commit_sha)
-            logger.warning(f"Skipped commit {commit_sha} due to timeout")
-            continue 
+            #logger.info(f"{datetime.now().strftime("%H:%M:%S")}: Processed {count} commits, {count_w_atoms} with atoms.")
+            if skipped:
+                append_rows_to_csv(skipped_path, skipped)
+            logger.info(f" Processed {count} commits, {count_w_atoms} with atoms.")
         except Exception as e:
             logger.error(e)
             append_to_json(errors_path, {"commit_sha": commit_sha, "error": str(e)})
             continue
             
         processing_info["count"] = count
+        processing_info["number_files"] = number_files
         processing_info["count_w_atoms"] = count_w_atoms
         processing_info["last_commit"] = str(commit_sha)
 
-    skipped_results = Path(output).parent / "skipped_commits.json"
-    skipped_results.write_text(json.dumps(skipped_commits))
-
-    logger.info(f"Processed {len(commits)} commits. \n\tSkipped {len(skipped_commits)} commits due to timeout. \n\tSkipped ratio = {len(skipped_commits)/len(commits)}")
         
 '''
 Mutliprocessing using static commit lists
@@ -209,7 +209,7 @@ def chunkify(lst, n):
     return [lst[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
-def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, errors_path, timeout, skipped_queue, pid):
+def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, errors_path, skipped_path, timeout, jobs, pid):
     """
     Worker function that pulls commits from the shared queue.
     """
@@ -218,60 +218,57 @@ def _get_removed_lines_worker(repo_path, commit_queue, output, processed_path, e
 
     repo = pygit2.Repository(str(repo_path))
     processed = load_processed_data(processed_path)
-    count, count_w_atoms = processed["count"], processed["count_w_atoms"]
-    first_commit = processed["last_commit"]
-    found_first_commit = first_commit is None
+    count, number_files, count_w_atoms = processed["count"],processed["number_files"], processed["count_w_atoms"]
+    """ first_commit = processed["last_commit"]
+    found_first_commit = first_commit is None """
 
     processing_info = {
         "current_commit": None, 
         "start_time": None,
-        "count": None,
-        "count_w_atoms": None,
+        "count": count,
+        "number_files": number_files,
+        "count_w_atoms": count_w_atoms,
         "last_commit": None,
     }
-    # set signal handler for timeout in worker process
-    signal.signal(signal.SIGALRM, _timeout_handler)
+
     while True:
-        try:
-            commit_sha = commit_queue.get()
-        except KeyboardInterrupt:
-            break 
+        commit_sha = commit_queue.get()
         if commit_sha is None:
             break
+
         processing_info["current_commit"] = commit_sha
         processing_info["start_time"] = datetime.now().strftime("%H:%M:%S")
         processed.update(processing_info)
         processed_path.write_text(json.dumps(processed))
-        if first_commit and not found_first_commit:
+        
+        """ if first_commit and not found_first_commit:
             found_first_commit = commit_sha == first_commit
             continue
         if not found_first_commit:
-            continue
+            continue """
         try:
-            signal.alarm(timeout)
             commit = repo.get(commit_sha)
-            atoms = find_removed_atoms(repo, commit)
-            signal.alarm(0)
+            atoms,skipped,num_files = find_removed_atoms(repo, commit, timeout, jobs)
+            number_files += num_files
             count += 1
             if atoms:
                 append_rows_to_csv(output, atoms)
                 count_w_atoms += 1
+            if skipped:
+                append_rows_to_csv(skipped_path, skipped)
             logger.info(f"PID {pid}: Processed {count} commits, {count_w_atoms} with atoms.")
-        except TimeoutError:
-            skipped_queue.put(commit_sha)
-            logger.warning(f"Skipped commit {commit_sha} due to timeout")
-            continue 
         except Exception as e:
             logger.error(e)
             append_to_json(errors_path, {"commit_sha": commit_sha, "error": str(e)})
             continue
         
         processing_info["count"] = count
+        processing_info["number_files"] = number_files
         processing_info["count_w_atoms"] = count_w_atoms
         processing_info["last_commit"] = str(commit.id)
         
     
-def execute_queue(repo_path, commits, number_of_processes, results_dir, last_procesed_dir, errors_dir, timeout=60):
+def execute_queue(repo_path, commits, number_of_processes, results_dir, last_procesed_dir, errors_dir, timeout, jobs):
     '''
     Multiprocessing using shared queue of commits 
 
@@ -284,9 +281,10 @@ def execute_queue(repo_path, commits, number_of_processes, results_dir, last_pro
     '''
     if not number_of_processes:
         number_of_processes = multiprocessing.cpu_count() // 2
+    if not jobs:
+        jobs = 1
 
     commit_queue = multiprocessing.Queue()
-    skipped_queue = multiprocessing.Queue()
 
     for commit in commits:
         commit_queue.put(commit)
@@ -303,8 +301,9 @@ def execute_queue(repo_path, commits, number_of_processes, results_dir, last_pro
                 results_dir / f"atoms{i+1}.csv",
                 last_procesed_dir / f"last_processed{i+1}.json",
                 errors_dir / f"errors{i+1}.json",
+                results_dir / f"skipped{i+1}.csv",
                 timeout,
-                skipped_queue,
+                jobs,
                 i,
             ),
         )
@@ -314,34 +313,88 @@ def execute_queue(repo_path, commits, number_of_processes, results_dir, last_pro
     for p in processes:
         p.join()
 
-    skipped_files = []
-    while not skipped_queue.empty():
-        skipped_files.append(skipped_queue.get())
-
-    skipped_results = results_dir / "skipped_commits.json"
-    skipped_results.write_text(json.dumps(skipped_files))
-
-    #logger.info(f"Processed {total_files.value} from {len(commits)} commits. \n\tSkipped {len(skipped_files)} files due to timeout. \n\tSkipped ratio = {len(skipped_files)/total_files.value}")
-    logger.info(f"Processed {len(commits)} commits. \n\tSkipped {len(skipped_files)} commits due to timeout. \n\tSkipped ratio = {len(skipped_files)/len(commits)}")
 
 '''
 Combines multiprocessing results into single data set
 '''
-def combine_results(results_folder):
-
-    combined_file_path = results_folder / "atoms.csv"
-
-    with combined_file_path.open("w", newline="") as combined_file:
-        writer = csv.writer(combined_file)
-
-        for file_path in results_folder.iterdir():
-            if file_path.name != combined_file_path.name:
-                if file_path.is_file() and file_path.suffix == ".csv":
-                    print(f"Adding {file_path.name}")
+def combine_results(results_dir,last_processed_dir):
+    """
+    Combine all atoms*.csv files into atoms.csv and all long_commits*.csv files into long_commits.csv.
+    """
+    atoms_combined = results_dir / "atoms.csv"
+    skipped_combined = results_dir / "skipped.csv"
+    files_to_remove = []
+    # Helper to combine files matching a pattern
+    def combine_pattern(pattern, output_file):
+        lines = 0
+        with output_file.open("w", newline="") as combined_file:
+            writer = csv.writer(combined_file)
+            for file_path in results_dir.glob(pattern):
+                if file_path.name == output_file.name:
+                    continue
+                if file_path.is_file():
+                    print(f"Adding {file_path.name} to {output_file.name}")
                     with file_path.open("r", newline="") as file:
                         reader = csv.reader(file)
                         for row in reader:
                             writer.writerow(row)
+                            lines += 1
+                files_to_remove.append(file_path)
+        return lines
+
+    num_atoms = combine_pattern("atoms*.csv", atoms_combined)
+    num_skipped = combine_pattern("skipped*.csv", skipped_combined)
+
+    total_count = total_count_w_atoms = total_files = 0
+    total_processed = results_dir / "stats.json"
+    for file_path in last_processed_dir.glob("last_processed*.json"):
+        if file_path.name == total_processed.name:
+            continue
+        if file_path.is_file():
+            print(f"Adding {file_path.name} to {total_processed.name}")
+            processed_data = load_processed_data(file_path)
+            total_count += processed_data["count"]
+            total_count_w_atoms += processed_data["count_w_atoms"]
+            total_files += processed_data["number_files"]
+            files_to_remove.append(file_path)
+    total_processed.write_text(json.dumps(
+        {"commits_processed": total_count, 
+         "commits_with_atoms": total_count_w_atoms,
+         "number_atoms_found": num_atoms, 
+         "files_processed": total_files,
+         "files_skipped_by_timeout": num_skipped,
+         "percent_files_timedout": num_skipped/total_files,
+         }))
+    
+    for file_path in files_to_remove:
+        try:
+            file_path.unlink()
+            print(f"Deleted {file_path}")
+        except Exception as e:
+            print(f"Could not delete {file_path}: {e}")
+
+
+def resumeRun(last_processed_dir, commits):
+    """
+    reads the 'last_processed' files if they exist
+    gets the commits that were being processes at interupt
+    counts past the number of commits already processed while saving those that were in processing
+    """
+    total_count = 0
+    resume_commits = []
+    last_found = False
+    for file_path in last_processed_dir.glob("last_processed*.json"):
+        if file_path.is_file():
+            processed_data = load_processed_data(file_path)
+            total_count += processed_data["count"]
+            resume_commits.append(processed_data["current_commit"]) 
+            last_found = True
+    if last_found:
+        logger.info(f"Resuming previously interupted run. {total_count} commits already processed. Beginning with commits that were interupted.")
+    print(resume_commits)
+    unprocesed_commits = resume_commits + commits[total_count+len(resume_commits):]  #if no last_processed files this will be all of commits(total_count==0 and len(resume_commits)==0)
+    return unprocesed_commits
+
 
 
 PATCHES_TO_SKIP = [CocciPatch.OMITTED_CURLY_BRACES]
@@ -353,18 +406,14 @@ ERRORS_FILE_DIR = Path("./extract")
 NUMBER_OF_PROCESSES = 1
 
 #profiling batch processing of commits
-def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = None):
+def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = None, timeout = None, jobs = 4):
 
     stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
     output_dir.mkdir(exist_ok=True)
     commits_file_path = output_dir / "commits.json"
-    #long_commits_path = ROOT_DIR / "long_commits.json"
-    #error_commits_path = ROOT_DIR / "error_commits.json"
-    commit_file = commits_file_path
-    #sticky_commits = ["1ce65102d2d3c54862f7b59479135168ed512cd2","64f7548aad63d2fbca2eeb6eb33361c218ebd5a5","bc4005ef43104da589951dba69291360c6a11ae7","ef68a0e1087882850628000f28078e1c4df917ee"]
 
     commits = safely_load_json(commits_file_path)
-    if not commits or commits[-1] != stop_commit:
+    if not commits or (commits[-1] != stop_commit and history_length == None):
         iterate_commits_and_extract_removed_code(linux_dir, stop_commit, commits_file_path, history_length)
 
     last_processed = output_dir / LAST_PROCESSED_DIR
@@ -374,8 +423,8 @@ def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     errors_dir = results_dir / ERRORS_FILE_DIR
     errors_dir.mkdir(exist_ok=True)
 
-    commits = json.loads(commit_file.read_text())
-    #commits = sticky_commits
+    commits = json.loads(commits_file_path.read_text())
+    commits = resumeRun(last_processed, commits)
 
     if len(commits) == 1 or cpus == 1:
         get_removed_lines(linux_dir, 
@@ -383,13 +432,19 @@ def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
                           results_dir / "atoms.csv", 
                           last_processed / "last_processed.json", 
                           errors_dir / "errors.json",
+                          results_dir / "skipped.csv",
+                          timeout,
+                          jobs
                           )
     else:
         #execute(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
-        execute_queue(linux_dir, commits, cpus, results_dir, last_processed, errors_dir)
-        combine_results(results_dir)
+        execute_queue(linux_dir, commits, cpus, results_dir, last_processed, errors_dir, timeout, jobs)
+        combine_results(results_dir,last_processed)
 
 if __name__ == "__main__":
-    profile_linux_fixes(Path("../projects/linux/"), Path("./output_test"), "1 year", 4)
-    #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test"), "1 year",4)',"profile_linux_test" )
-    
+    profile_linux_fixes(Path("../projects/linux/"), Path("./output_all"), None, 8, 60, 1)
+    #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test_1job_8proc"), "3 month", 8, 60, 1)',"profile_linux_1job_8proc" ) # pretty close
+    #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test_2job_4proc"), "3 month", 4, 60, 2)',"profile_linux_2job_4proc" )
+    #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test_4job_2proc"), "3 month", 2, 60, 4)',"profile_linux_4job_2proc" )
+    #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test_2job_8proc"), "3 month", 8, 60, 2)',"profile_linux_2job_8proc" ) # my optimal
+    #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test_4job_4proc"), "3 month", 4, 60, 4)',"profile_linux_4job_4proc" )

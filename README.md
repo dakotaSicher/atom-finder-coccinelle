@@ -50,9 +50,10 @@ a 60 second timeout on each invocation of spatch, with spatch spawing 2 jobs per
 
 1. If history length is not specified, process all commits going back to the introduction of specific commit messages for bug fixes.
 2. If cpus is set to 0 or not specified, it will use half the system's cpu count. 
-3. The timeout value is is used to limit the runtime of spatch on individual patch runs on each file being passes. Default is no timeout.
+3. Default for coccijobs is 1.
+4. The timeout value is is used to limit the runtime of spatch on individual patch runs on each file being passes. Default is no timeout.
 Certain data structures such as deeply nested loops and if statements, or large switch statements can result in some 
 atoms patches takeing upwards of an hour to run on a single file. Setting the timeout will result in a very minor loss of 
 data collected as these files are very rare in the kernel. 
-4. Some basic testing has shown that using more processes is more benefitial than using more coccijobs. For a fixed number of cpus more coccijobs MAY improve runtime marginally. Your milage may vary.
-5. This tool records infomation in the output_dir that can be used to restart an interrupted run from where it left off. If your run needs to be restarted, simply specify the same repo and output directory. It is fine to restart with a different number of cpus, timeout, or coccijobs. The list of commits that was generated using the original history_length will be reused, unless the no history_length is specified at restart, then it will use the entire history.
+5. Some basic testing has shown that using more processes is more benefitial than using more coccijobs. For a fixed number of cpus more coccijobs MAY improve runtime marginally. Your milage may vary.
+6. This tool records infomation in the output_dir that can be used to restart an interrupted run from where it left off. If your run needs to be restarted, simply specify the same repo and output directory. It is fine to restart with a different number of cpus, timeout, or coccijobs. The list of commits that was generated using the original history_length will be reused, unless the no history_length is specified at restart, then it will use the entire history.

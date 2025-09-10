@@ -3,7 +3,7 @@ import json
 #import cProfile
 
 from pathlib import Path
-from src.analysis.scripts.extract_fixes import iterate_commits_and_extract_removed_code, get_removed_lines,execute, combine_results,execute_queue
+from src.analysis.scripts.extract_fixes import iterate_commits_and_extract_removed_code, get_removed_lines,execute, combine_results,execute_queue, resumeRun
 from src.analysis.utils.utils import safely_load_json
 from src import ROOT_DIR
 
@@ -37,7 +37,7 @@ This tool takes up to 5 arguments:
 @click.option("-t","--timeout",type=int,default=None, help="set timeout for individual patch execution")
 @click.option("-j","--coccijobs",type=int,default=1, help="number of jobs to to call spatch with")
 
-def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = NUMBER_OF_PROCESSES, timeout = None, jobs=4):
+def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),history_length = None, cpus = None, timeout = None, jobs=None):
 
     stop_commit = "c511851de162e8ec03d62e7d7feecbdf590d881d" # this is the commit when the fix: convention was introduced
     output_dir.mkdir(exist_ok=True)
@@ -55,7 +55,7 @@ def extract_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     errors_dir.mkdir(exist_ok=True)
 
     commits = json.loads(commits_file_path.read_text())
-    # commits = ["e589f9b7078e1c0191613cd736f598e81d2390de"]
+    commits = resumeRun(last_processed, commits)
 
     if len(commits) == 1 or cpus == 1:
         get_removed_lines(linux_dir, 

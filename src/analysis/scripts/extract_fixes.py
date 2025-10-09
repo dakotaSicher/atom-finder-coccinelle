@@ -4,7 +4,7 @@ import sys
 import cProfile
 import queue
 import json
-import signal
+import Levenshtein
 import multiprocessing
 import re
 import tempfile
@@ -15,58 +15,156 @@ from pathlib import Path
 from timelength import TimeLength
 from src import ROOT_DIR
 from src.analysis.utils.parsing import run_coccinelle_for_file_at_commit
-from src.analysis.utils.git import get_diff
+from src.analysis.utils.git import get_diff, get_block_mappings
 from src.analysis.utils.utils import append_rows_to_csv, append_to_json, safely_load_json
 from src.run_cocci import CocciPatch
 from src.log import logger
 
 PATCHES_TO_SKIP = [CocciPatch.OMITTED_CURLY_BRACES]
+LEVENSHTEIN_RATIO_CUTOFF = 0.5
 
-def _timeout_handler(signum, frame):
-    raise TimeoutError("find_removed_atoms timed out")
 
 def find_removed_atoms(repo, commit, timeout, jobs):
     """
-    Get removed lines (lines removed in a commit) by comparing the commit to its parent.
+    Runs spatch on both the commit and its direct parent.
+    If an atom is found in the parent and not found in the commit
+    it is considered a 'removed' atom and recoreded.
     """
     logger.info(f"Current commit: {commit.id}")
-    atoms = []
+    old_atoms = []
+    new_atoms = []
 
-    _, removed_lines = get_diff(repo, commit)
+    new_lines, old_lines = get_diff(repo, commit)
+    line_map = get_block_mappings(repo, commit)
+    
 
-    if removed_lines:
-        loaded_headers = defaultdict(list)
-        invalid_headers = defaultdict(list)
+    if old_lines or new_lines:
+        old_loaded_headers = defaultdict(list)
+        old_invalid_headers = defaultdict(list)
+        new_loaded_headers = defaultdict(list)
+        new_invalid_headers = defaultdict(list)
 
     parent = commit.parents[0]
     output = []
     skipped = []
     with tempfile.TemporaryDirectory() as temp_dir:
-        for file_name, removed in removed_lines.items():
+        for file_name, removed in old_lines.items():
             removed_line_numbers = [line.old_lineno for line in removed]
-
-            atoms, skipped_patches = run_coccinelle_for_file_at_commit(
+            added_line_numbers = [line.new_lineno for line in new_lines[file_name]]
+            #print(line_map[file_name])
+            #find atoms in the parent lines that were removed
+            old_atoms, old_skipped_patches = run_coccinelle_for_file_at_commit(
                 repo,
                 file_name,
                 parent,
                 removed_line_numbers,
                 temp_dir,
-                loaded_headers,
-                invalid_headers,
+                old_loaded_headers,
+                old_invalid_headers,
                 timeout,
                 jobs,
                 PATCHES_TO_SKIP,
             )
 
-            for row in atoms:
-                atom, path, start_line, start_col, end_line, end_col, code = row
-                output_row = [atom, file_name, str(parent.id), start_line, start_col, code]
-                output.append(output_row)
-            if skipped_patches:
-                row = [commit.id, file_name] + skipped_patches
+            #find atoms in the commit that were added
+            new_atoms, new_skipped_patches = run_coccinelle_for_file_at_commit(
+                repo,
+                file_name,
+                commit,
+                added_line_numbers,
+                temp_dir,
+                new_loaded_headers,
+                new_invalid_headers,
+                timeout,
+                jobs,
+                PATCHES_TO_SKIP,
+            )
+
+            removed_atoms = []
+            added_atoms = []
+
+            for old_row in old_atoms:
+                old_atom_kind, old_path, old_start_line, old_start_col, old_end_line, old_end_col, old_code = old_row
+                old = [old_atom_kind, file_name, str(commit.id), old_start_line, old_start_col, old_code]
+                removed_atoms.append(old)
+            for new_row in new_atoms:
+                new_atom, new_path, new_start_line, new_start_col, new_end_line, new_end_col, new_code = new_row
+                new = [new_atom, file_name, str(commit.id), new_start_line, new_start_col, new_code]
+                added_atoms.append(new)
+            #print(removed_atoms)
+            #print(added_atoms)
+
+            output += categorize_atoms(added_atoms,removed_atoms,line_map[file_name])
+
+            if new_skipped_patches:
+                row = [commit.id, file_name] + new_skipped_patches
+                skipped.append(row)
+            if old_skipped_patches:
+                row = [parent.id, file_name] + old_skipped_patches
                 skipped.append(row)
 
-    return output, skipped, len(removed_lines)
+    return output, skipped, len(old_lines)
+
+def categorize_atoms(added:list, removed:list, chunk_map:list):
+    """
+    Takes the list of atoms found from the Parent and Commit
+    Find the diff chunk that the old(parent) atoms are in 
+    then checks the checks the added side of the chunk for 
+    the closest matching line of code, if it exists. 
+    If a new atom was on that line of code
+
+    """
+    modified_atoms = []
+    actually_removed_atoms = []
+    actually_added_atoms = []
+    #find best line match for each removed atom
+    for old_atom in removed[:]:
+        line_to_match = None
+        matched_line_no = None
+        best_match_ratio = 0
+        old_atom_line = int(old_atom[3])
+        #print(old_atom_line)
+        #figure out which chunk this old_line in in
+        for chunk in chunk_map: #chunk = ([(num, cont)], [(num,cont)])
+            #chunk[0] = [(old_num,old_cont),...]
+            for i,line in enumerate(chunk[0]): #get old line contents
+                #print(line[0] == old_atom_line)
+                if line[0] == old_atom_line:
+                    line_to_match = line[1] #get full contents of this old atom's line in the code
+                    #print("break")
+                    break
+            else: #old line not in this chunk
+                #print("continue")
+                continue
+            #chunk[1] = [(new_nun,new_cont),...]
+            #print("trying to match: "+ line_to_match)
+            for i,line in enumerate(chunk[1]): #find matching line in new lines
+                #do Levenshtein distance ration for each line.contents and line_to_match
+                lev_ratio = Levenshtein.ratio(line_to_match, line[1], score_cutoff=LEVENSHTEIN_RATIO_CUTOFF)
+                #print( line[1]+ ": match ratio - " + str(lev_ratio))
+                if lev_ratio > best_match_ratio:
+                    best_match_ratio = lev_ratio
+                    matched_line_no = line[0]
+        if best_match_ratio > 0:
+            #print("found a matching line")
+            #this line this old atom is in matches closely a line in the new code
+            #check if there is a similar atom in this new line of code it matched
+            for new_atom in added[:]:
+                if int(new_atom[3]) == matched_line_no and new_atom[0] == old_atom[0]: #type match double check
+                    #print("found a matching atom")
+                    #this is the same atom 
+                    modified_atoms.append( ["="] + old_atom + new_atom[3:] )
+                    removed.remove(old_atom)
+                    added.remove(new_atom)
+                    break
+        #if no match then old_atom stats in removed and new_atom stays in added
+    for old_atom in removed:
+        actually_removed_atoms.append(["-"] + old_atom)
+    for new_atom in added:
+        actually_added_atoms.append(["+"] + new_atom)
+    
+    return actually_removed_atoms + modified_atoms + actually_added_atoms
+
 
 
 def iterate_commits_and_extract_removed_code(repo_path, stop_commit, commits_file_path ,history_length = None):
@@ -123,7 +221,7 @@ def load_processed_data(processed_path):
     """Load processed data from a JSON file."""
     if processed_path.is_file():
         return json.loads(processed_path.read_text())
-    return {"count": 0, "count_w_atoms": 0, "last_commit": None,"number_files": 0,}
+    return {"count": 0, "count_w_atoms": 0, "last_commit": None, "number_files": 0,}
 
 
 '''
@@ -138,9 +236,9 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path, s
     processing_info = {
         "current_commit": None, 
         "start_time": None,
-        "count": None,
-        "number_files": None,
-        "count_w_atoms": None,
+        "count": count,
+        "number_files": number_files,
+        "count_w_atoms": count_w_atoms,
         "last_commit": None,
     }
 
@@ -148,11 +246,11 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path, s
         processing_info["current_commit"] = commit_sha
         processing_info["start_time"] = datetime.now().strftime("%H:%M:%S")
         processed.update(processing_info)
-        processed_path.write_text(json.dumps(processed))
+        processed_path.write_text(json.dumps(processed,indent=4))
 
         try:
             commit = repo.get(commit_sha)
-            atoms,skipped,num_files = find_removed_atoms(repo, commit, timeout, jobs)
+            atoms, skipped, num_files = find_removed_atoms(repo, commit, timeout, jobs)
             number_files += num_files
             count += 1
             if atoms:
@@ -163,7 +261,7 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path, s
                 append_rows_to_csv(skipped_path, skipped)
             logger.info(f" Processed {count} commits, {count_w_atoms} with atoms.")
         except Exception as e:
-            logger.error(e)
+            logger.error(e,exc_info=True)
             append_to_json(errors_path, {"commit_sha": commit_sha, "error": str(e)})
             continue
             
@@ -171,6 +269,8 @@ def get_removed_lines(repo_path, commits, output, processed_path, errors_path, s
         processing_info["number_files"] = number_files
         processing_info["count_w_atoms"] = count_w_atoms
         processing_info["last_commit"] = str(commit_sha)
+        processed.update(processing_info)
+        processed_path.write_text(json.dumps(processed,indent=4))
 
         
 '''
@@ -309,6 +409,7 @@ def combine_results(results_dir,last_processed_dir):
     atoms_combined = results_dir / "atoms.csv"
     skipped_combined = results_dir / "skipped.csv"
     files_to_remove = []
+    atom_counts = {}
     # Helper to combine files matching a pattern
     def combine_pattern(pattern, output_file):
         lines = 0
@@ -322,6 +423,11 @@ def combine_results(results_dir,last_processed_dir):
                     with file_path.open("r", newline="") as file:
                         reader = csv.reader(file)
                         for row in reader:
+                            atom = row[0]
+                            if atom not in atom_counts.keys():
+                                atom_counts[atom] = 1
+                            else:
+                                atom_counts[atom] += 1
                             writer.writerow(row)
                             lines += 1
                 files_to_remove.append(file_path)
@@ -342,14 +448,16 @@ def combine_results(results_dir,last_processed_dir):
             total_count_w_atoms += processed_data["count_w_atoms"]
             total_files += processed_data["number_files"]
             files_to_remove.append(file_path)
-    total_processed.write_text(json.dumps(
+    with open(total_processed,"w") as stats:
+        json.dump(
         {"commits_processed": total_count, 
          "commits_with_atoms": total_count_w_atoms,
          "number_atoms_found": num_atoms, 
          "files_processed": total_files,
          "files_skipped_by_timeout": num_skipped,
          "percent_files_timedout": num_skipped/total_files,
-         }))
+         "atom_counts": atom_counts,
+         },stats,indent=4)
     
     for file_path in files_to_remove:
         try:
@@ -376,8 +484,8 @@ def resumeRun(last_processed_dir, commits):
             last_found = True
     if last_found:
         logger.info(f"Resuming previously interupted run. {total_count} commits already processed. Beginning with commits that were interupted.")
-    print(resume_commits)
     unprocesed_commits = resume_commits + commits[total_count+len(resume_commits):]  #if no last_processed files this will be all of commits(total_count==0 and len(resume_commits)==0)
+    logger.info(f"Commits to process: {len(unprocesed_commits)}")
     return unprocesed_commits
 
 
@@ -409,7 +517,8 @@ def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
     errors_dir.mkdir(exist_ok=True)
 
     commits = json.loads(commits_file_path.read_text())
-    commits = resumeRun(last_processed, commits)
+    #commits = resumeRun(last_processed, commits)
+    #commits = ["b61dfa9bc4430ad82b96d3a7c1c485350f91b467"]
 
     if len(commits) == 1 or cpus == 1:
         get_removed_lines(linux_dir, 
@@ -427,7 +536,9 @@ def profile_linux_fixes(linux_dir = REPO_PATH,output_dir = Path("./output"),hist
         combine_results(results_dir,last_processed)
 
 if __name__ == "__main__":
-    profile_linux_fixes(Path("../projects/linux/"), Path("./output_all"), None, 8, 60, 1)
+    #profile_linux_fixes(Path("../projects/linux/"), Path("./output_b61df"), None, 8, 60, 1)
+    #profile_linux_fixes(Path("../projects/linux/"), Path("./output_all"), None, 8, 60, 1) #need to resume
+    profile_linux_fixes(Path("../projects/linux/"), Path("./output_test"), "1 month", 1, 60, 1)
     #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test_1job_8proc"), "3 month", 8, 60, 1)',"profile_linux_1job_8proc" ) # pretty close
     #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test_2job_4proc"), "3 month", 4, 60, 2)',"profile_linux_2job_4proc" )
     #cProfile.run('profile_linux_fixes(Path("../projects/linux/"), Path("./output_test_4job_2proc"), "3 month", 2, 60, 4)',"profile_linux_4job_2proc" )

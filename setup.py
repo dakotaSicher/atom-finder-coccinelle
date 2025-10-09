@@ -10,7 +10,7 @@ setup(
     author="The Atoms of Confusion Project",
     packages=["src"],
     include_package_data=True,
-    install_requires=["click", "pytest","pygit2","clang==14"],
+    install_requires=["click", "pytest","pygit2","clang==14","Levenshtein"],
     extras_require={
         "selenium": [
             "selenium>=4.0.0",

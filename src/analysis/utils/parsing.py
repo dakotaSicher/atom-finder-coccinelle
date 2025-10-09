@@ -271,7 +271,7 @@ def run_coccinelle_for_file_at_commit(
     shorter_content, modified_lines = parse_and_modify_functions(
         content, modified_line_numbers, headers_dir, file_name
     )
-
+    #print(modified_lines)
     # Define file paths within the temporary directory
     input = Path(temp_dir, "input", file_name)
     input.parent.mkdir(parents=True, exist_ok=True)
